@@ -1,0 +1,1 @@
+Canecestry is a web app to allow breeders to easily create kinship matrices as well as visualize / subset them. It is currently hard coded with sugarcane pedigree data as a proof of concept. It can be accessed through this link https://canecestry-zanthoxylum2117.pythonanywhere.com/
