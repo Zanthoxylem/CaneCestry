@@ -4,60 +4,32 @@ import dash_bootstrap_components as dbc
 import pandas as pd
 import json
 import fastcluster
-
 import seaborn as sns
 import matplotlib.pyplot as plt
 import base64
 from io import BytesIO
-
 import flask
 import os
 import tempfile
-
 from flask import send_file
 import io
 import pandas as pd
-from flask import send_file
 from datetime import datetime
 import uuid
-
-import dash_table
-
-import dash_html_components as html
-
-from flask import Flask
-from dash import Dash
-
-
-import dash
-import dash_bootstrap_components as dbc
-import dash_core_components as dcc
-import dash_html_components as html
-from dash.dependencies import Input, Output, State
 import dash_table
 from dash.exceptions import PreventUpdate
-
-import tempfile
-import os
-
-from dash import dcc, html, callback
-from dash.dependencies import Input, Output
-
+from flask import Flask
+from dash import Dash
+import numpy as np
+import graphviz
 
 server = Flask(__name__)
-
-
-
 
 # Load data
 df = pd.read_csv('/home/Zanthoxylum2117/Canecestry/PedInf.txt', sep="\t")
 
 # Global variable to store the current A-matrix
 current_amatrix = None
-
-
-
-
 
 parents_set = set(df['MaleParent'].tolist() + df['FemaleParent'].tolist())
 
@@ -107,14 +79,6 @@ def find_relatives(line_names, df):
     descendant_ancestors = [find_ancestors([desc], df) for desc in descendants]
     all_relatives = list(set(ancestors + descendants + [item for sublist in descendant_ancestors for item in sublist]))
     return all_relatives
-
-
-
-
-
-
-
-import numpy as np
 
 def compute_amatrix_diploid_revised(pedigree_df):
     # Extract unique individuals
@@ -192,8 +156,6 @@ def sort_pedigree_df(pedigree_df):
 
     return sorted_df
 
-
-
 def calculate_lrf(pedigree_df):
     # Initialize LRF values for all lines as NaN
     lrf_values = {line: None for line in pedigree_df['LineName'].unique()}
@@ -221,30 +183,24 @@ def calculate_lrf(pedigree_df):
 
     return lrf_values
 
-
-
-
-
-
-######################################################################################################################################
-
 # Initialize the Dash app with a custom Bootstrap theme
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.SANDSTONE], server=server)
 
 # Custom CSS for botanical theme
 CUSTOM_CSS = {
-    'container': {'padding': '20px', 'margin-top': '20px', 'background-color': '#f0f5f3'},  # Light green background
-    'header': {'textAlign': 'center', 'padding': '10px', 'color': '#2e8b57', 'font-family': 'Arial', 'font-weight': 'bold', 'font-size': '57px'},  # Dark green color, thicker font
-    'button': {'margin': '5px', 'font-weight': 'bold', 'background-color': '#3cb371', 'color': 'white'},  # Green button with white text
-    'table': {'overflowX': 'auto', 'margin-bottom': '20px', 'border': '0px solid #3cb371'},  # Green table border
+    'container': {'padding': '20px', 'margin-top': '20px', 'background-color': '#f9f9f9'},  # Light green background
+    'header': {'textAlign': 'center', 'padding': '10px', 'color': '#2c3e50', 'font-family': 'Arial', 'font-weight': 'bold', 'font-size': '40px'},  # Dark green color, thicker font
+    'button': {'margin': '5px', 'font-weight': 'bold', 'background-color': '#2980b9', 'color': 'white'},  # Green button with white text
+    'table': {'overflowX': 'auto', 'margin-bottom': '20px', 'border': '1px solid #ccc'},  # Green table border
     'image': {'width': '100%', 'padding': '10px'},
-    'dropdown': {'font-weight': 'bold', 'color': '#2e8b57'}  # Dark green color for dropdown
+    'dropdown': {'font-weight': 'bold', 'color': '#2980b9'},  # Dark green color for dropdown
+    'loading': {'textAlign': 'center', 'padding': '20px'}
 }
 
 def main_page_layout():
     return dbc.Container([
         dbc.Row(dbc.Col(html.H1("CaneCestry 2.0", className="app-header", style=CUSTOM_CSS['header']))),
-        dbc.Row(dbc.Col(html.Div(id='input-container', children=[]), className="p-3", style={'background-color': '#dff0d8'})),  # Lighter green for input area
+        dbc.Row(dbc.Col(html.Div(id='input-container', children=[]), className="p-3", style={'background-color': '#eaf2f8'})),  # Lighter green for input area
 
         dbc.Row([
             dbc.Col(dcc.Dropdown(
@@ -252,7 +208,7 @@ def main_page_layout():
                 options=[{'label': name, 'value': name} for name in df['LineName'].unique()],
                 multi=True,
                 placeholder="Select Line Names",
-                style={'width': '50%', 'font-weight': 'bold', 'color': '#2e8b57'}
+                style=CUSTOM_CSS['dropdown']
             ), width=12)
         ]),
 
@@ -274,17 +230,19 @@ def main_page_layout():
             ), width=6)
         ], style=CUSTOM_CSS['table']),
 
-        # Button for generating A-matrix and heatmap with improved styling
-        dbc.Row(dbc.Col(html.Button("Get Matrix (Press again after heatmap displays) ", id="generate-amatrix-button", className="btn btn-info"))),
+        # Button layout with tooltips for better guidance
+        dbc.Row([
+            dbc.Col(html.Button("Get Matrix", id="generate-amatrix-button", className="btn btn-info", style=CUSTOM_CSS['button']), width=3),
+            dbc.Col(html.Button("Generate Family Tree", id="generate-family-tree-button", className="btn btn-warning", style=CUSTOM_CSS['button']), width=3),
+            dbc.Col(html.A("Download Full Matrix", id='download-full-link', href='', download='full_matrix.csv', className="btn btn-success"), width=3),
+            dbc.Col(html.A("Download Subset Matrix", id='download-subset-link', href='', download='subset_matrix.csv', className="btn btn-warning"), width=3)
+        ]),
+
+        # Loading indicator
+        dbc.Row(dbc.Col(html.Div(id='loading-output', style=CUSTOM_CSS['loading']))),
 
         # Image component to display the heatmap with a frame
         dbc.Row(dbc.Col(html.Img(id='heatmap-image', src='', style=CUSTOM_CSS['image']))),
-
-        # Links for downloading the matrix, styled as buttons
-        dbc.Row([
-            dbc.Col(html.A("Download Full Matrix", id='download-full-link', href='', download='full_matrix.csv', className="btn btn-success")),
-            dbc.Col(html.A("Download Subset Matrix", id='download-subset-link', href='', download='subset_matrix.csv', className="btn btn-warning"))
-        ]),
 
         # Display area for subset matrix with enhanced layout
         dbc.Row(dbc.Col(html.Div(id='subset-matrix-display', style={'padding': '10px'}))),
@@ -296,11 +254,9 @@ def main_page_layout():
                 options=[],  # Options will be dynamically populated
                 multi=True,  # Allow multiple selections
                 placeholder="Subset A-Matrix",
-                style={'width': '100%', 'font-weight': 'bold', 'color': '#2e8b57'}
+                style=CUSTOM_CSS['dropdown']
             ))
         ]),
-
-
 
         html.Div(id='full-matrix-csv-path', style={'display': 'none'}),
         dcc.Store(id='matrix-store'),
@@ -317,15 +273,17 @@ def progeny_finder_layout():
                 id='progeny-line-dropdown',
                 options=[{'label': name, 'value': name} for name in df['LineName'].unique()],
                 multi=False,
-                placeholder="Select First Line Name"
+                placeholder="Select First Line Name",
+                style=CUSTOM_CSS['dropdown']
             ),
             dcc.Dropdown(
                 id='progeny-line-dropdown-2',
                 options=[{'label': name, 'value': name} for name in df['LineName'].unique()],
                 multi=False,
-                placeholder="Select Second Line Name"
+                placeholder="Select Second Line Name",
+                style=CUSTOM_CSS['dropdown']
             ),
-            html.Button("Find Progeny", id="find-progeny-button", className="btn btn-success"),
+            html.Button("Find Progeny", id="find-progeny-button", className="btn btn-success", style=CUSTOM_CSS['button']),
             html.Div(id='progeny-results')
         ])), className="mb-4"),
 
@@ -335,15 +293,29 @@ def progeny_finder_layout():
                 id='single-parent-dropdown',
                 options=[{'label': name, 'value': name} for name in df['LineName'].unique()],
                 multi=False,
-                placeholder="Select a Parent"
+                placeholder="Select a Parent",
+                style=CUSTOM_CSS['dropdown']
             ),
-            html.Button("Find Progeny", id="find-single-parent-progeny-button", className="btn btn-info"),
+            html.Button("Find Progeny", id="find-single-parent-progeny-button", className="btn btn-info", style=CUSTOM_CSS['button']),
             html.Div(id='single-parent-progeny-results')
         ])), className="mb-4"),
 
-        dbc.Row(dbc.Col(html.A("Back to Main Page", href="/", className="btn btn-secondary"))),
-    ], fluid=True, style=CUSTOM_CSS['container'])  # Corrected Line
+        # New section for generating family tree
+        dbc.Row(dbc.Col(html.Div(id='family-tree-module', children=[
+            html.H4("Generate Family Tree"),
+            dcc.Dropdown(
+                id='family-tree-dropdown',
+                options=[{'label': name, 'value': name} for name in df['LineName'].unique()],
+                multi=False,
+                placeholder="Select a Line",
+                style=CUSTOM_CSS['dropdown']
+            ),
+            html.Button("Generate Family Tree", id="generate-family-tree-button", className="btn btn-warning", style=CUSTOM_CSS['button']),
+            html.Img(id='family-tree-image', src='', style=CUSTOM_CSS['image'])
+        ])), className="mb-4"),
 
+        dbc.Row(dbc.Col(html.A("Back to Main Page", href="/", className="btn btn-secondary", style=CUSTOM_CSS['button']))),
+    ], fluid=True, style=CUSTOM_CSS['container'])  # Corrected Line
 
 app.layout = html.Div([
     dcc.Location(id='url', refresh=False),
@@ -358,7 +330,6 @@ def display_page(pathname):
     else:
         return main_page_layout()
 
-
 # Callback to update the selected line names list from the dropdown
 @app.callback(
     Output('selected-line-names-list', 'children'),
@@ -371,28 +342,6 @@ def update_selected_line_names_list(selected_line_names):
     list_items = [html.Li(name) for name in selected_line_names]
     return list_items
 
-
-
-
-@app.callback(
-    [Output('male-parent-display', 'children'),
-     Output('female-parent-display', 'children')],
-    [Input('selected-line-names-list', 'children')]
-)
-def update_parent_info(selected_line_names_list):
-    if not selected_line_names_list:
-        return "No Line Selected", "No Line Selected"
-
-    selected_line_name = selected_line_names_list[0].get('props', {}).get('children', '')
-    if selected_line_name:
-        row = df[df['LineName'] == selected_line_name]
-        if not row.empty:
-            male_parent = row.iloc[0]['MaleParent']
-            female_parent = row.iloc[0]['FemaleParent']
-            return f"Male Parent: {male_parent}", f"Female Parent: {female_parent}"
-    return "No Data", "No Data"
-
-
 @app.callback(
     Output('parent-info-table', 'data'),
     [Input('line-name-dropdown', 'value')]
@@ -404,35 +353,36 @@ def update_parent_info_table(selected_line_names):
     filtered_rows = df[df['LineName'].isin(selected_line_names)][['LineName', 'MaleParent', 'FemaleParent']]
     return filtered_rows.to_dict('records')
 
-
-
 # Global dictionary to store matrix data
 in_memory_matrices = {}
 
-
 @app.callback(
-    [Output('heatmap-image', 'src'), Output('download-full-link', 'href'), Output('full-matrix-csv-path', 'children'), Output('matrix-store', 'data'),],
+    [Output('heatmap-image', 'src'), Output('download-full-link', 'href'), Output('full-matrix-csv-path', 'children'), Output('matrix-store', 'data'), Output('loading-output', 'children')],
     [Input('generate-amatrix-button', 'n_clicks')],
     [State('line-name-dropdown', 'value')]
 )
 def generate_amatrix_and_heatmap(n_clicks, selected_line_names):
     global current_amatrix
     if n_clicks is None or not selected_line_names:
-        return dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
-    # No need to re-extract line names; directly use selected_line_names
+    loading_indicator = dbc.Spinner(size="lg", color="primary", children=[
+        html.Div("Generating A-Matrix and heatmap, please wait...")
+    ])
+
     all_related_lines = find_relatives(selected_line_names, filtered_df)
     relatives_df = filtered_df[filtered_df['LineName'].isin(all_related_lines)]
     sorted_relatives_df = sort_pedigree_df(relatives_df)
     current_amatrix = compute_amatrix_diploid_revised(sorted_relatives_df)
 
-    # Create a temporary file to store the full matrix
+    # Ensure matrix state is saved correctly
+    store_data = current_amatrix.to_dict()
+    in_memory_matrices['current'] = current_amatrix
+
     temp_file_full = tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.csv')
     current_amatrix.to_csv(temp_file_full)
     temp_file_full.close()
 
-
-    # Generate heatmap
     heatmap_plot = sns.clustermap(current_amatrix, method='average', cmap='Spectral', figsize=(15, 15), row_cluster=True, col_cluster=True)
     plt.close(heatmap_plot.fig)
 
@@ -442,44 +392,23 @@ def generate_amatrix_and_heatmap(n_clicks, selected_line_names):
     encoded_heatmap = base64.b64encode(heatmap_buffer.read()).decode('utf-8')
     heatmap_src = f'data:image/png;base64,{encoded_heatmap}'
 
-    # Create a filename and store matrix data
-    filename = "_".join(selected_line_names) + ".csv"
-    matrix_id = str(uuid.uuid4())
-    in_memory_matrices[matrix_id] = {
-        "full_matrix": current_amatrix,
-        "filename": filename
-    }
-
     full_matrix_link = f'/download?filename={temp_file_full.name}&type=full'
-    store_data = current_amatrix.to_dict()
-    # Set full_matrix_csv_path as the children of the hidden Div
     full_matrix_csv_path = temp_file_full.name
-    return heatmap_src, full_matrix_link, full_matrix_csv_path, store_data
 
-
-
+    return heatmap_src, full_matrix_link, full_matrix_csv_path, store_data, loading_indicator
 
 @app.callback(
     Output('subset-dropdown', 'options'),
-    [Input('generate-amatrix-button', 'n_clicks')],
-    [State('matrix-store', 'data')]  # Get the matrix data from dcc.Store
+    [Input('matrix-store', 'data')]
 )
-def update_subset_dropdown_options(n_clicks, matrix_data):
-    if n_clicks is None or matrix_data is None:
+def update_subset_dropdown_options(matrix_data):
+    if matrix_data is None:
         return []
 
-    # Convert the matrix data back to a DataFrame
     current_amatrix = pd.DataFrame(matrix_data)
-
-    # Extract line names from the current_amatrix's index
     line_names = current_amatrix.index.tolist()
     options = [{'label': name, 'value': name} for name in line_names]
     return options
-
-
-
-
-
 
 @app.callback(
     Output('subset-matrix-display', 'children'),
@@ -490,32 +419,12 @@ def display_subset_matrix(subset_values, matrix_data):
     if not subset_values or not matrix_data:
         return ""
 
-    # Convert the matrix data back to a DataFrame
     current_amatrix = pd.DataFrame(matrix_data)
+    subset_amatrix = current_amatrix.loc[subset_values, subset_values]
 
-    # Initialize an empty DataFrame for the subset matrix
-    subset_amatrix = pd.DataFrame(index=subset_values, columns=subset_values)
-
-    # Fill the subset matrix with values from current_amatrix
-    for row in subset_values:
-        for col in subset_values:
-            if row in current_amatrix.index and col in current_amatrix.columns:
-                subset_amatrix.at[row, col] = current_amatrix.at[row, col]
-            else:
-                # If there is no relation, fill with 0 or an appropriate default value
-                subset_amatrix.at[row, col] = 0
-
-    # Generate HTML table
     table_header = [html.Thead(html.Tr([html.Th(col) for col in [''] + list(subset_amatrix.columns)]))]
     table_body = [html.Tbody([html.Tr([html.Td(subset_amatrix.index[i])] + [html.Td(subset_amatrix.iloc[i, j]) for j in range(len(subset_amatrix.columns))]) for i in range(len(subset_amatrix))])]
     return html.Table(table_header + table_body, className="table")
-
-
-
-
-
-
-
 
 @app.server.route('/download')
 def download_file():
@@ -532,7 +441,6 @@ def download_file():
     else:
         return "File not found", 404
 
-
 @app.callback(
     Output('download-subset-link', 'href'),
     [Input('subset-dropdown', 'value')]
@@ -541,21 +449,13 @@ def update_subset_matrix_download_link(subset_values):
     if not subset_values or current_amatrix is None:
         return dash.no_update
 
-    # Generate the subset matrix
     subset_amatrix = current_amatrix.loc[subset_values, subset_values]
+    temp_file_subset = tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.csv')
+    subset_amatrix.to_csv(temp_file_subset)
+    temp_file_subset.close()
 
-
-@app.callback(
-    Output('progeny-module', 'style'),
-    [Input('toggle-progeny-module', 'n_clicks')]
-)
-def toggle_progeny_module(n_clicks):
-    if n_clicks and n_clicks % 2 != 0:  # Odd number of clicks: show the module
-        return {}
-    else:  # Even number of clicks: hide the module
-        return {'display': 'none'}
-
-
+    subset_matrix_link = f'/download?filename={temp_file_subset.name}&type=subset'
+    return subset_matrix_link
 
 @app.callback(
     Output('progeny-results', 'children'),
@@ -566,17 +466,13 @@ def find_progeny(n_clicks, line1, line2):
     if n_clicks is None or not line1 or not line2:
         return dash.no_update
 
-    # Logic to find progeny with selected lines as parents
     progeny_df = df[(df['MaleParent'] == line1) & (df['FemaleParent'] == line2) |
                     (df['MaleParent'] == line2) & (df['FemaleParent'] == line1)]
 
     if progeny_df.empty:
         return "No progeny found for the selected lines."
 
-    # Create a table or list to display the results
     return html.Ul([html.Li(f"{row['LineName']} (Female: {row['MaleParent']}, Male: {row['FemaleParent']})") for index, row in progeny_df.iterrows()])
-
-
 
 @app.callback(
     Output('single-parent-progeny-results', 'children'),
@@ -587,13 +483,11 @@ def find_single_parent_progeny(n_clicks, parent):
     if n_clicks is None or not parent:
         return dash.no_update
 
-    # Logic to find progeny with the selected parent
     progeny_df = df[(df['MaleParent'] == parent) | (df['FemaleParent'] == parent)]
 
     if progeny_df.empty:
         return "No progeny found for the selected parent."
 
-    # Create a table or list to display the results
     results = []
     for index, row in progeny_df.iterrows():
         if row['MaleParent'] == parent:
@@ -611,16 +505,33 @@ def find_single_parent_progeny(n_clicks, parent):
 
     return html.Ul(results)
 
+@app.callback(
+    Output('family-tree-image', 'src'),
+    [Input('generate-family-tree-button', 'n_clicks')],
+    [State('family-tree-dropdown', 'value')]
+)
+def generate_family_tree(n_clicks, selected_line_name):
+    if n_clicks is None or not selected_line_name:
+        return dash.no_update
 
+    all_relatives = find_relatives([selected_line_name], filtered_df)
+    relatives_df = filtered_df[filtered_df['LineName'].isin(all_relatives)]
 
-    return html.Ul(results)
+    dot = graphviz.Digraph(comment='Family Tree')
+    for _, row in relatives_df.iterrows():
+        dot.node(row['LineName'])
+        if pd.notna(row['MaleParent']):
+            dot.edge(row['MaleParent'], row['LineName'])
+        if pd.notna(row['FemaleParent']):
+            dot.edge(row['FemaleParent'], row['LineName'])
 
+    tree_buffer = BytesIO()
+    tree_buffer.write(dot.pipe(format='png'))
+    tree_buffer.seek(0)
+    encoded_tree = base64.b64encode(tree_buffer.read()).decode('utf-8')
+    tree_src = f'data:image/png;base64,{encoded_tree}'
 
-    # Create a temporary file to store the subset matrix
-    temp_file_subset = tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.csv')
-    subset_amatrix.to_csv(temp_file_subset)
-    temp_file_subset.close()
+    return tree_src
 
-    subset_matrix_link = f'/download?filename={temp_file_subset.name}&type=subset'
-
-    return subset_matrix_link
+if __name__ == '__main__':
+    app.run_server(debug=True)
