@@ -1,28 +1,17 @@
 import dash
-from dash import html, dcc, callback, Input, Output, State
+from dash import html, dcc, Input, Output, State
 import dash_bootstrap_components as dbc
 import pandas as pd
-import json
-import fastcluster
 import seaborn as sns
 import matplotlib.pyplot as plt
 import base64
 from io import BytesIO
 import flask
-import os
+from flask import send_file
 import tempfile
-from flask import send_file
-import io
-import pandas as pd
-from flask import send_file
-from datetime import datetime
-import uuid
-import dash_table
-from dash.exceptions import PreventUpdate
-from flask import Flask
-from dash import Dash
 import numpy as np
 import graphviz
+from flask import Flask
 
 server = Flask(__name__)
 
@@ -40,7 +29,7 @@ mask = ~df['LineName'].isin(parents_set) & (df['MaleParent'].isna() | df['MalePa
 # Filtering out the rows based on the mask
 filtered_df = df[~mask]
 
-app = dash.Dash(__name__, external_stylesheets=[dbc.themes.SANDSTONE], server=server)
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.SANDSTONE], server=server, suppress_callback_exceptions=True)
 
 
 @app.callback(
@@ -62,14 +51,18 @@ def generate_family_tree(n_clicks, selected_line_name):
         if not current_line.empty:
             male_parent = current_line.iloc[0]['MaleParent']
             female_parent = current_line.iloc[0]['FemaleParent']
-            if pd.notna(male_parent) and male_parent not in ancestors:
-                ancestors.add(male_parent)
-                relationships.append((male_parent, line_name, 'male'))
-                find_ancestors(male_parent, df, ancestors, relationships)
-            if pd.notna(female_parent) and female_parent not in ancestors:
-                ancestors.add(female_parent)
-                relationships.append((female_parent, line_name, 'female'))
-                find_ancestors(female_parent, df, ancestors, relationships)
+            if pd.notna(male_parent):
+                if (male_parent, line_name, 'male') not in relationships:
+                    relationships.append((male_parent, line_name, 'male'))
+                if male_parent not in ancestors:
+                    ancestors.add(male_parent)
+                    find_ancestors(male_parent, df, ancestors, relationships)
+            if pd.notna(female_parent):
+                if (female_parent, line_name, 'female') not in relationships:
+                    relationships.append((female_parent, line_name, 'female'))
+                if female_parent not in ancestors:
+                    ancestors.add(female_parent)
+                    find_ancestors(female_parent, df, ancestors, relationships)
         return ancestors, relationships
 
     all_ancestors, relationships = find_ancestors(selected_line_name, filtered_df)
@@ -128,9 +121,10 @@ def generate_descendant_tree(n_clicks, selected_line_name):
                 child = row['LineName']
                 male_parent = row['MaleParent']
                 female_parent = row['FemaleParent']
+                if (line_name, child, 'descendant') not in relationships:
+                    relationships.append((line_name, child, 'descendant'))
                 if child not in descendants:
                     descendants.add(child)
-                    relationships.append((line_name, child, 'descendant'))
                     find_descendants(child, df, descendants, relationships)
         return descendants, relationships
 
@@ -176,7 +170,7 @@ def find_ancestors(line_names, df, processed=None, relationships=None):
     if relationships is None:
         relationships = []
 
-    parents_df = df[df['LineName'].isin(line_names)][['MaleParent', 'FemaleParent']].dropna()
+    parents_df = df[df['LineName'].isin(line_names)][['MaleParent', 'FemaleParent']]
     parents = parents_df['MaleParent'].tolist() + parents_df['FemaleParent'].tolist()
 
     new_parents = [parent for parent in parents if parent not in processed]
@@ -190,9 +184,11 @@ def find_ancestors(line_names, df, processed=None, relationships=None):
     for parent in new_parents:
         for line in line_names:
             if parent == df[df['LineName'] == line]['MaleParent'].values[0]:
-                relationships.append((parent, line, 'male'))
+                if (parent, line, 'male') not in relationships:
+                    relationships.append((parent, line, 'male'))
             if parent == df[df['LineName'] == line]['FemaleParent'].values[0]:
-                relationships.append((parent, line, 'female'))
+                if (parent, line, 'female') not in relationships:
+                    relationships.append((parent, line, 'female'))
 
     return find_ancestors(all_relatives, df, processed, relationships)
 
@@ -216,9 +212,11 @@ def find_descendants(line_names, df, processed=None, relationships=None):
     for child in new_progeny:
         for line in line_names:
             if line == df[df['LineName'] == child]['MaleParent'].values[0]:
-                relationships.append((line, child, 'descendant'))
+                if (line, child, 'descendant') not in relationships:
+                    relationships.append((line, child, 'descendant'))
             if line == df[df['LineName'] == child]['FemaleParent'].values[0]:
-                relationships.append((line, child, 'descendant'))
+                if (line, child, 'descendant') not in relationships:
+                    relationships.append((line, child, 'descendant'))
 
     return find_descendants(all_relatives, df, processed, relationships)
 
@@ -540,13 +538,11 @@ def find_single_parent_progeny(n_clicks, parent):
 
         results.append(
             html.Li(
-                f"{row['LineName']} (Female: {Female_parent}, Male: {Male_parent})"
+                f"{row['LineName']} (Female: {female_parent}, Male: {male_parent})"
             )
         )
 
     return html.Ul(results)
-
-
 
 def compute_amatrix_diploid_revised(pedigree_df):
     individuals = pedigree_df['LineName'].unique()
