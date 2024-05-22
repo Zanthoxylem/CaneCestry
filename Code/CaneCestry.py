@@ -107,9 +107,65 @@ def generate_family_tree(n_clicks, selected_line_name):
 
     return html.Img(src=tree_src, style=CUSTOM_CSS['image'])
 
+@app.callback(
+    Output('descendant-tree-image', 'children'),
+    [Input('generate-descendant-tree-button', 'n_clicks')],
+    [State('family-tree-dropdown', 'value')]
+)
+def generate_descendant_tree(n_clicks, selected_line_name):
+    if n_clicks is None or not selected_line_name:
+        return dash.no_update
+
+    def find_descendants(line_name, df, descendants=None, relationships=None):
+        if descendants is None:
+            descendants = set()
+        if relationships is None:
+            relationships = []
+
+        current_line = df[df['MaleParent'] == line_name].append(df[df['FemaleParent'] == line_name])
+        if not current_line.empty:
+            for _, row in current_line.iterrows():
+                child = row['LineName']
+                male_parent = row['MaleParent']
+                female_parent = row['FemaleParent']
+                if child not in descendants:
+                    descendants.add(child)
+                    relationships.append((line_name, child, 'descendant'))
+                    find_descendants(child, df, descendants, relationships)
+        return descendants, relationships
+
+    all_descendants, relationships = find_descendants(selected_line_name, filtered_df)
+    all_lines = all_descendants.union({selected_line_name})
+    relatives_df = filtered_df[filtered_df['LineName'].isin(all_lines)]
+
+    dot = graphviz.Digraph(comment='Descendant Tree')
+    dot.attr('node', shape='ellipse', style='filled')
+
+    for _, row in relatives_df.iterrows():
+        line_name = row['LineName']
+        label = f"{line_name}"
+
+        # Determine node color based on role
+        node_color = 'lightgrey'
+        if row['LineName'] == selected_line_name:
+            node_color = 'green'  # Highlight the selected line
+
+        dot.node(line_name, label=label, fillcolor=node_color, fontcolor='black', color='black')
+
+    for parent, child, role in relationships:
+        dot.edge(parent, child, color='black')
+
+    tree_buffer = BytesIO()
+    tree_buffer.write(dot.pipe(format='png'))
+    tree_buffer.seek(0)
+    encoded_tree = base64.b64encode(tree_buffer.read()).decode('utf-8')
+    tree_src = f'data:image/png;base64,{encoded_tree}'
+
+    return html.Img(src=tree_src, style=CUSTOM_CSS['image'])
+
 def find_relatives(line_names, df):
     ancestors, relationships = find_ancestors(line_names, df)
-    descendants = find_descendants(line_names, df)
+    descendants, _ = find_descendants(line_names, df)
     descendant_ancestors = [find_ancestors([desc], df) for desc in descendants]
     all_relatives = list(set(ancestors + descendants + [item for sublist in descendant_ancestors for item in sublist]))
     return all_relatives
@@ -140,9 +196,11 @@ def find_ancestors(line_names, df, processed=None, relationships=None):
 
     return find_ancestors(all_relatives, df, processed, relationships)
 
-def find_descendants(line_names, df, processed=None):
+def find_descendants(line_names, df, processed=None, relationships=None):
     if processed is None:
         processed = set()
+    if relationships is None:
+        relationships = []
 
     progeny_df = df[df['MaleParent'].isin(line_names) | df['FemaleParent'].isin(line_names)]
     progeny = progeny_df['LineName'].tolist()
@@ -150,15 +208,19 @@ def find_descendants(line_names, df, processed=None):
     new_progeny = [child for child in progeny if child not in processed]
 
     if not new_progeny:
-        return line_names
+        return line_names, relationships
 
     processed.update(new_progeny)
     all_relatives = list(set(line_names + new_progeny))
 
-    return find_descendants(all_relatives, df, processed)
+    for child in new_progeny:
+        for line in line_names:
+            if line == df[df['LineName'] == child]['MaleParent'].values[0]:
+                relationships.append((line, child, 'descendant'))
+            if line == df[df['LineName'] == child]['FemaleParent'].values[0]:
+                relationships.append((line, child, 'descendant'))
 
-
-
+    return find_descendants(all_relatives, df, processed, relationships)
 
 
 CUSTOM_CSS = {
@@ -275,6 +337,12 @@ def progeny_finder_layout():
             ),
             html.Button("Generate Family Tree", id="generate-family-tree-button", className="btn btn-warning", style=CUSTOM_CSS['button']),
             html.Div(id='family-tree-image')
+        ]))),
+        
+        dbc.Row(dbc.Col(html.Div(id='descendant-tree-module', children=[
+            html.H4("Generate Descendant Tree"),
+            html.Button("Generate Descendant Tree", id="generate-descendant-tree-button", className="btn btn-warning", style=CUSTOM_CSS['button']),
+            html.Div(id='descendant-tree-image')
         ]))),
 
         dbc.Row(dbc.Col(html.A("Back to Main Page", href="/", className="btn btn-secondary", style=CUSTOM_CSS['button']))),
@@ -445,7 +513,7 @@ def find_progeny(n_clicks, line1, line2):
     if progeny_df.empty:
         return "No progeny found for the selected lines."
 
-    return html.Ul([html.Li(f"{row['LineName']} (Female: {row['MaleParent']}, Male: {row['FemaleParent']})") for index, row in progeny_df.iterrows()])
+    return html.Ul([html.Li(f"{row['LineName']} (Female: {row['FemaleParent']}, Male: {row['MaleParent']})") for index, row in progeny_df.iterrows()])
 
 @app.callback(
     Output('single-parent-progeny-results', 'children'),
@@ -472,7 +540,7 @@ def find_single_parent_progeny(n_clicks, parent):
 
         results.append(
             html.Li(
-                f"{row['LineName']} (Female: {female_parent}, Male: {male_parent})"
+                f"{row['LineName']} (Female: {Female_parent}, Male: {Male_parent})"
             )
         )
 
