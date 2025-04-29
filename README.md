@@ -1,6 +1,6 @@
 # CaneCestry 2.0
 
-*A web‑based toolkit for pedigree exploration and additive/​co‑ancestry matrix computation in breeding programmes*
+*A web‑based toolkit for pedigree exploration and additive/​co‑ancestry matrix computation in breeding programs*
 
 ---
 
@@ -75,7 +75,7 @@ Browse to **<http://127.0.0.1:8050>**.
 
 | Module | Capabilities |
 |--------|--------------|
-| **Generate Kinship Matrix** | • Compute additive (A) or co‑ancestry matrices via Henderson method (diploid / polyploid variant)<br>• Heat‑map with hierarchical clustering (SciPy) or fallback simple heat‑map<br>• Download full or user‑defined subset as CSV |
+| **Generate Kinship Matrix** | • Compute additive (A) or co‑ancestry matrices via Henderson method. <br>• Heat‑map with hierarchical clustering (SciPy) or fallback simple heat‑map<br>• Download full or user‑defined subset as CSV |
 | **Pedigree Explorer** | • Ancestry / descendant tracing, coloured by maternal/paternal lineages<br>• Progeny lookup (single parent or specific cross)<br>• Interactive family‑tree images rendered via Graphviz with kinship colour maps |
 | **Add Pedigree Entries** | • Upload tab‑delimited pedigree records<br>• Inline correction of missing/unknown parents<br>• Temporary entries for what‑if analysis |
 
