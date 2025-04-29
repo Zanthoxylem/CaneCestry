@@ -20,7 +20,7 @@ import os
 import time
 import re
 from dash.exceptions import PreventUpdate
-
+from pathlib import Path
 
 
 
@@ -55,7 +55,8 @@ server = Flask(__name__)
 # =============================================================================
 # 1. Store Built-In (Default) Sugarcane Data and Create a Copy for df
 # =============================================================================
-default_df = pd.read_csv('/Canecestry/Pedigree_Subset.txt', sep="\t")
+BASE_DIR = Path(__file__).resolve().parent        # directory that contains this .py file
+default_df = pd.read_csv(BASE_DIR / "Pedigree_Subset.txt", sep="\t")
 df = default_df.copy()
 
 # Create filtered_df from df
@@ -239,38 +240,104 @@ def base_layout(content):
         ),
         # Existing modals (Information & Data Viewer)
         dbc.Modal([
-            dbc.ModalHeader("Information"),
+            dbc.ModalHeader("CaneCestry 2.0 – User Reference"),
             dbc.ModalBody(
                 html.Div([
+
+                    # ── General description ──────────────────────────────────────
                     html.H4("Overview"),
                     html.P(
-                        "CaneCestry 2.0 is a tool for managing and analyzing "
-                        "pedigree data in sugarcane breeding programs. It offers "
-                        "functionalities to visualize family trees, compute "
-                        "kinship matrices, and explore progeny."
+                        "CaneCestry 2.0 supports pedigree management and relationship "
+                        "coefficient calculation for sugarcane breeding programmes. "
+                        "Functions include pedigree visualisation, ancestry queries, "
+                        "and generation of Henderson A-matrices or coancestry matrices "
+                        "for quantitative genetic analysis."
                     ),
-                    html.H4("Main Page"),
+
+                    # ── Module descriptions ──────────────────────────────────────
+                    html.H4("Module Details"),
+
+                    html.H5("Data Source Selection"),
+                    html.P(
+                        "Choose either the internal example pedigree or upload a "
+                        "tab-delimited file with the columns LineName, MaleParent, "
+                        "and FemaleParent.  The selected file becomes the active "
+                        "dataset for all other functions."
+                    ),
+
+                    html.H5("Kinship Matrix – Lines plus Descendants"),
                     html.Ul([
-                        html.Li("Select Line Names: Choose one or more line names to analyze."),
-                        html.Li("Get Matrix: Generate the kinship matrix for selected lines."),
-                        html.Li("Download Full Matrix: Download the full kinship matrix."),
-                        html.Li("Download Subset Matrix: Download a subset of the kinship matrix."),
-                        html.Li("Heatmap: Visualize the kinship matrix as a heatmap.")
+                        html.Li("Specify one or more target lines.  The module gathers "
+                                "those lines, all of their ancestors, and every "
+                                "registered descendant."),
+                        html.Li("Select calculation mode with the slider: "
+                                "Henderson A-matrix (diploid assumption) or "
+                                "adjusted coancestry matrix."),
+                        html.Li("Outputs: interactive heat-map, downloadable full "
+                                "matrix (CSV), and subset tools for experimental-design "
+                                "workflows.")
                     ]),
-                    html.H4("Progeny Finder"),
+
+                    html.H5("Kinship Matrix – Lines plus Ancestors"),
                     html.Ul([
-                        html.Li("Lookup Progeny of Specific Pairing: Find progeny resulting from a specific male and female parent."),
-                        html.Li("Lookup Progeny of Single Parent: Find all progeny of a single parent."),
-                        html.Li("Generate Family Tree: Visualize the ancestry of a selected line."),
-                        html.Li("Generate Descendant Tree: Visualize the descendants of a selected line."),
-                        html.Li("Generate Combined Family Tree for Two Lines: Visualize the combined ancestry of two selected lines.")
-                    ])
-                ])
+                        html.Li("Collects the lines of interest together with all "
+                                "known parents, grandparents, and earlier ancestors."),
+                        html.Li("Excludes descendants; suitable for founder-origin "
+                                "analysis and background relationship checks."),
+                        html.Li("Same calculation modes and export options as the "
+                                "previous module.")
+                    ]),
+
+                    html.H5("Pedigree Explorer"),
+                    html.Ul([
+                        html.Li("Specific Cross Lookup: returns progeny of a defined "
+                                "female × male pairing."),
+                        html.Li("Single-Parent Progeny: lists all offspring where the "
+                                "chosen line is recorded as either parent."),
+                        html.Li("Family Tree: upward pedigree visualisation; generation "
+                                "depth slider and optional highlighting of maternal, "
+                                "paternal, or both lineages."),
+                        html.Li("Descendant Tree: downward pedigree showing all known "
+                                "generations derived from a selected genotype."),
+                        html.Li("Combined Family Tree: merges two pedigrees to display "
+                                "shared founders and separate lineage branches."),
+                        html.Li("Hypothetical Progeny Tree: inserts a temporary cross "
+                                "and colours relatives by calculated kinship values.")
+                    ]),
+
+                    html.H5("Add Pedigree Entries"),
+                    html.P(
+                        "Upload additional pedigree rows for review.  Entries with "
+                        "unknown parents are flagged and can be corrected through "
+                        "dropdown selection before integration into the active "
+                        "dataset."
+                    ),
+
+                    html.H5("Data Viewer and Reset"),
+                    html.P(
+                        "Opens a table of the current dataset.  The reset button "
+                        "re-loads the default example pedigree and clears all user "
+                        "modifications."
+                    ),
+
+                    html.H5("Matrix Computation"),
+                    html.P(
+                        "Relationship coefficients are calculated with Henderson’s "
+                        "recursuve algorithm.  A Matrix yields the standard "
+                        "numerator relationship matrix.  Coancestry Matrix divides all "
+                        "coefficients by two to approximate identity-by-descent."
+                    ),
+
+                ], style={'fontSize': '15px'})
             ),
             dbc.ModalFooter(
                 dbc.Button("Close", id="close-info-modal", className="ml-auto")
             )
-        ], id="info-modal", size="lg", is_open=False),
+        ],
+        id="info-modal",
+        size="lg",
+        is_open=False
+),
     dbc.Modal([
         dbc.ModalHeader("Current Dataset"),
         dbc.ModalBody(
@@ -2884,4 +2951,4 @@ def upload_file(contents, filename, last_modified):
 
 
 if __name__ == '__main__':
-    app.run_server(debug=False)
+    app.run(debug=False)
