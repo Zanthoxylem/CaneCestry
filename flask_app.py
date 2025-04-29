@@ -1,5 +1,5 @@
 import dash
-from dash import html, dcc, Input, Output, State, dash_table
+from dash import html, dcc, Input, Output, State, ALL
 import dash_bootstrap_components as dbc
 import pandas as pd
 import seaborn as sns
@@ -8,29 +8,54 @@ import base64
 from io import BytesIO
 import flask
 from flask import send_file
-import tempfile
 import numpy as np
 import graphviz
 from flask import Flask
-import uuid
 from collections import defaultdict
 from matplotlib.colors import Normalize
 import matplotlib.cm as cm
-
-# ---- NEW: Numba imports
-import numba
 from numba import njit
+import urllib.parse
+import os
+import time
+import re
+from dash.exceptions import PreventUpdate
+
+
+
+
+#from dash.dependencies import Input, Output, State, ALL
+#import dash
+#import base64
+#import pandas as pd
+#from io import BytesIO
+#import numba
+#import uuid
+#from dash import dash_table
+
+
+
 
 # A threshold to skip clustering if matrix exceeds this size
-MAX_CLUSTER_SIZE = 300
+MAX_CLUSTER_SIZE = 300000
+
+# A compiled regex for names with digits + exactly one 'p' or 'P' and no other letters : For Polycrosses
+pattern_poly_p = re.compile(r'^\d*[pP]\d*$')
+
+# Create an output folder to hold matrix files
+OUTPUT_DIR = os.path.join(os.getcwd(), "matrices")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Initialize Flask server
 server = Flask(__name__)
 
+
+
+#region Setting up data
 # =============================================================================
-# 1. Store Built-In (Default) Sugarcane Data and Create a Copy for `df`
+# 1. Store Built-In (Default) Sugarcane Data and Create a Copy for df
 # =============================================================================
-default_df = pd.read_csv('/home/Zanthoxylum2117/Canecestry/Pedigree_24.txt', sep="\t")
+default_df = pd.read_csv('/home/Zanthoxylum2117/Canecestry/Pedigree_25.txt', sep="\t")
 df = default_df.copy()
 
 # Create filtered_df from df
@@ -59,7 +84,6 @@ app = dash.Dash(
     suppress_callback_exceptions=True
 )
 
-# Custom CSS styles
 CUSTOM_CSS = {
     'container': {'padding': '20px', 'margin-top': '20px', 'background-color': '#f9f9f9'},
     'header': {
@@ -68,9 +92,14 @@ CUSTOM_CSS = {
         'color': '#2c3e50',
         'font-family': 'Arial',
         'font-weight': 'bold',
-        'font-size': '40px'
+        'font-size': '50px'
     },
-    'button': {'margin': '10px', 'font-weight': 'bold', 'background-color': '#2980b9', 'color': 'white'},
+    'button': {
+        'margin': '10px',
+        'font-weight': 'bold',
+        'background-color': '#2980b9',
+        'color': 'white'
+    },
     'table': {'overflowX': 'auto', 'margin-bottom': '20px', 'border': '1px solid #ccc'},
     'image': {'width': '100%', 'padding': '10px'},
     'dropdown': {'font-weight': 'bold', 'color': '#2980b9'},
@@ -79,77 +108,147 @@ CUSTOM_CSS = {
         'top': '10px',
         'right': '10px',
         'border-radius': '50%',
-        'width': '75px',
-        'height': '75px',
-        'font-size': '40px',
+        'width': '85px',             # Increased from 75px
+        'height': '85px',            # Increased from 75px
+        'font-size': '45px',         # Increased from 40px
         'textAlign': 'center',
-        'lineHeight': '50px',
+        'lineHeight': '65px',        # Adjusted to vertically center the icon/text
         'background-color': '#2980b9',
         'color': 'white',
         'border': 'none'
     },
     'home-button': {
-        'position': 'absolute',
-        'left': '10px',
         'top': '10px',
         'border-radius': '50%',
-        'width': '75px',
-        'height': '75px',
-        'font-size': '40px',
+        'width': '85px',             # Increased from 75px
+        'height': '85px',            # Increased from 75px
+        'font-size': '45px',         # Increased from 40px
         'textAlign': 'center',
-        'lineHeight': '50px',
+        'lineHeight': '65px',        # Adjusted line-height
         'background-color': '#2980b9',
         'color': 'white',
         'border': 'none'
+    },
+    'view-data-button': {
+        'top': '10px',
+        'border-radius': '50%',
+        'width': '85px',             # Increased from 75px
+        'height': '85px',            # Increased from 75px
+        'font-size': '45px',         # Increased from 40px
+        'textAlign': 'center',
+        'lineHeight': '65px',        # Adjusted line-height
+        'background-color': '#27ae60',
+        'color': 'white',
+        'border': 'none'
+    },
+    # Define new inline styles for the left and right button groups.
+    'left_button_group_style' : {
+        'display': 'flex',
+        'alignItems': 'center',
+        'gap': '10px',
+        'marginTop': '0px'         # Reduced top margin to move groups up
+    },
+    'right_button_group_style' : {
+        'display': 'flex',
+        'justifyContent': 'flex-end',
+        'alignItems': 'center',
+        'gap': '10px',
+        'marginTop': '0px'         # Reduced top margin to move groups up
     }
 }
 
 
+#endregion
+
+#region Layouts
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# =============================================================================
+# 2. Layouts for Diffrent Pages
+# =============================================================================
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+# =============================================================================
+# A. Layout for static items across entire site
+# =============================================================================
+
+app.layout = html.Div([
+    dcc.Location(id='url', refresh=False),
+    html.Div(id='page-content')
+])
+
 def base_layout(content):
     """Generates the base layout with common structure."""
     return dbc.Container([
+        # Header row with left and right button groups
         dbc.Row([
-            # Home button
             dbc.Col(
-                html.Button(
-                    html.I(className="fas fa-home"),
-                    id="home-button",
-                    style=CUSTOM_CSS['home-button']
-                )
+                html.Div([
+                    # Home button on the left
+                    html.Button(
+                        html.I(className="fas fa-home"),
+                        id="home-button",
+                        style={**CUSTOM_CSS['home-button'], 'position': 'static'}
+                    ),
+                    # View Data button, to the right of Home button
+                    html.Button(
+                        html.I(className="fas fa-table"),
+                        id="view-data-button",
+                        style={**CUSTOM_CSS['view-data-button'], 'position': 'static'}
+                    )
+                ], style={**CUSTOM_CSS['left_button_group_style']}),
+                width=6
             ),
-            # Clear Data (trash) button
             dbc.Col(
-                html.Button(
-                    html.I(className="fas fa-trash"),
-                    id="clear-data-button",
-                    style={
-                        **CUSTOM_CSS['static-button'],
-                        'right': '100px',  # Shift left from the "?" button
-                        'background-color': '#e74c3c'
-                    }
-                ),
-                width="auto"
-            ),
+                html.Div([
+                    # Trash (Clear Data) button on the right
+                    html.Button(
+                        html.I(className="fas fa-trash"),
+                        id="clear-data-button",
+                        style={**CUSTOM_CSS['static-button'],
+                               'background-color': '#e74c3c',
+                               'position': 'static'}  # Remove absolute positioning
+                    ),
+                    # Help button ("?" icon) on the right
+                    html.Button(
+                        "?",
+                        id="open-info-modal",
+                        style={**CUSTOM_CSS['static-button'],
+                               'position': 'static'}  # Remove absolute positioning
+                    )
+                ], style={**CUSTOM_CSS['right_button_group_style']}),
+                width=6
+            )
         ]),
+        # Page title row
         dbc.Row(
             dbc.Col(
-                html.H1("CaneCestry", className="app-header",
-                        style={**CUSTOM_CSS['header'], 'font-size': '60px'})  # Bigger font size
+                html.H1(
+                    "CaneCestry",
+                    className="app-header",
+                    style={**CUSTOM_CSS['header'], 'font-size': '60px'}
+                )
             )
         ),
+        # Content rows
         dbc.Row(
             dbc.Col(html.Div(id='common-content', children=content))
         ),
         dbc.Row(
             dbc.Col(html.Div(id='page-specific-content'))
         ),
-        html.Button("?", id="open-info-modal", style=CUSTOM_CSS['static-button']),
+        # Existing modals (Information & Data Viewer)
         dbc.Modal([
             dbc.ModalHeader("Information"),
             dbc.ModalBody(
                 html.Div([
                     html.H4("Overview"),
-                    html.P("CaneCestry 2.0 is a tool for managing and analyzing pedigree data in sugarcane breeding programs. It offers functionalities to visualize family trees, compute kinship matrices, and explore progeny."),
+                    html.P(
+                        "CaneCestry 2.0 is a tool for managing and analyzing "
+                        "pedigree data in sugarcane breeding programs. It offers "
+                        "functionalities to visualize family trees, compute "
+                        "kinship matrices, and explore progeny."
+                    ),
                     html.H4("Main Page"),
                     html.Ul([
                         html.Li("Select Line Names: Choose one or more line names to analyze."),
@@ -171,8 +270,36 @@ def base_layout(content):
             dbc.ModalFooter(
                 dbc.Button("Close", id="close-info-modal", className="ml-auto")
             )
-        ], id="info-modal", size="lg", is_open=False)
+        ], id="info-modal", size="lg", is_open=False),
+    dbc.Modal([
+        dbc.ModalHeader("Current Dataset"),
+        dbc.ModalBody(
+            html.Div([
+                html.Div(id="current-data-table", style={'maxHeight': '400px', 'overflowY': 'scroll'}),
+                html.Br(),
+                html.Button("Make df", id="make-df-button", className="btn btn-primary"),
+                html.Div(id="make-df-status")
+            ])
+        ),
+        dbc.ModalFooter(
+            dbc.Button("Close", id="close-data-modal", className="ml-auto")
+        )
+    ], id="data-modal", size="lg", is_open=False),
+    # dcc.Store to hold the current dataset (including appended entries)
+    dcc.Store(
+        id="data-store",
+        data=default_df.to_dict('records'),
+        storage_type='local'
+    ),
+
     ], fluid=True, style=CUSTOM_CSS['container'])
+
+
+
+# =============================================================================
+# B. Layout for Splash Page popup and buttons
+# =============================================================================
+
 
 
 def splash_page_layout():
@@ -194,7 +321,8 @@ def splash_page_layout():
                 html.Div(
                     [
                         html.P(
-                            "Upload a .csv (or .txt with tab separator) with columns: LineName, MaleParent, FemaleParent",
+                            "Upload a .csv (or .txt with tab separator) with columns: "
+                            "LineName, MaleParent, FemaleParent",
                             style={'fontWeight': 'bold'}
                         ),
                         dcc.Upload(
@@ -212,7 +340,10 @@ def splash_page_layout():
                             },
                             multiple=False
                         ),
-                        html.Div(id='splash-upload-status', style={'marginTop': '10px', 'color': 'green'}),
+                        html.Div(
+                            id='splash-upload-status',
+                            style={'marginTop': '10px', 'color': 'green'}
+                        ),
                     ],
                     id='splash-upload-section',
                     style={'display': 'none'}
@@ -238,69 +369,108 @@ def splash_page_layout():
                 )
             )
         ),
+
+        # 1) BUTTON FOR KINSHIP MATRIX PAGE
         dbc.Row(
             dbc.Col(
                 html.A(
-                    "Generate Kinship Matrix",
+                    "Generate Kinship Matrix w/ Decendants",  # Renamed here
                     href="/main-page",
                     className="btn",
-                    style={"width": "300px", "height": "80px", "fontSize": "20px",
-                           "marginBottom": "10px",
-                           "backgroundColor": "#2980b9", "color": "white",
-                           "borderRadius": "10px", "fontWeight": "bold",
-                           "display": "flex", "justifyContent": "center",
-                           "alignItems": "center", "textDecoration": "none"}
+                    style={
+                        "width": "300px",
+                        "height": "80px",
+                        "fontSize": "20px",
+                        "marginBottom": "10px",
+                        "backgroundColor": "#2980b9",
+                        "color": "white",
+                        "borderRadius": "10px",
+                        "fontWeight": "bold",
+                        "display": "flex",
+                        "justifyContent": "center",
+                        "alignItems": "center",
+                        "textDecoration": "none"
+                    }
                 ),
                 width="auto"
             ),
             justify="center"
         ),
+
+        # 2) BUTTON FOR SUBSET PEDIGREE PAGE
+        dbc.Row(
+            dbc.Col(
+                html.A(
+                    "Generate Kinship Matrix w/o Decendants",  # New separate button
+                    href="/subset-pedigree-page",
+                    className="btn",
+                    style={
+                        "width": "300px",
+                        "height": "80px",
+                        "fontSize": "20px",
+                        "marginBottom": "10px",
+                        "backgroundColor": "#2980b9",
+                        "color": "white",
+                        "borderRadius": "10px",
+                        "fontWeight": "bold",
+                        "display": "flex",
+                        "justifyContent": "center",
+                        "alignItems": "center",
+                        "textDecoration": "none"
+                    }
+                ),
+                width="auto"
+            ),
+            justify="center"
+        ),
+
+        # REMAINING BUTTONS/ROWS...
         dbc.Row(
             dbc.Col(
                 html.A(
                     "Pedigree Explorer",
                     href="/progeny-finder",
                     className="btn",
-                    style={"width": "300px", "height": "80px", "fontSize": "20px",
-                           "marginBottom": "10px",
-                           "backgroundColor": "#2980b9", "color": "white",
-                           "borderRadius": "10px", "fontWeight": "bold",
-                           "display": "flex", "justifyContent": "center",
-                           "alignItems": "center", "textDecoration": "none"}
+                    style={
+                        "width": "300px",
+                        "height": "80px",
+                        "fontSize": "20px",
+                        "marginBottom": "10px",
+                        "backgroundColor": "#2980b9",
+                        "color": "white",
+                        "borderRadius": "10px",
+                        "fontWeight": "bold",
+                        "display": "flex",
+                        "justifyContent": "center",
+                        "alignItems": "center",
+                        "textDecoration": "none"
+                    }
                 ),
                 width="auto"
             ),
             justify="center"
         ),
-        dbc.Row(
-            dbc.Col(
-                html.A(
-                    "Upload Pedigree Data",
-                    href="/upload",
-                    className="btn",
-                    style={"width": "300px", "height": "80px", "fontSize": "20px",
-                           "marginBottom": "10px",
-                           "backgroundColor": "#2980b9", "color": "white",
-                           "borderRadius": "10px", "fontWeight": "bold",
-                           "display": "flex", "justifyContent": "center",
-                           "alignItems": "center", "textDecoration": "none"}
-                ),
-                width="auto"
-            ),
-            justify="center"
-        ),
+
         dbc.Row(
             dbc.Col(
                 html.A(
                     "Add Pedigree Entries",
                     href="/dummy-progeny-matrix",
                     className="btn",
-                    style={"width": "300px", "height": "80px", "fontSize": "20px",
-                           "marginBottom": "10px",
-                           "backgroundColor": "#2980b9", "color": "white",
-                           "borderRadius": "10px", "fontWeight": "bold",
-                           "display": "flex", "justifyContent": "center",
-                           "alignItems": "center", "textDecoration": "none"}
+                    style={
+                        "width": "300px",
+                        "height": "80px",
+                        "fontSize": "20px",
+                        "marginBottom": "10px",
+                        "backgroundColor": "#2980b9",
+                        "color": "white",
+                        "borderRadius": "10px",
+                        "fontWeight": "bold",
+                        "display": "flex",
+                        "justifyContent": "center",
+                        "alignItems": "center",
+                        "textDecoration": "none"
+                    }
                 ),
                 width="auto"
             ),
@@ -310,55 +480,16 @@ def splash_page_layout():
     return base_layout(content)
 
 
-def upload_page_layout():
-    """Layout for the upload page."""
-    example_df = df.head()
-    example_table = dash_table.DataTable(
-        columns=[{"name": i, "id": i} for i in example_df.columns],
-        data=example_df.to_dict('records'),
-        style_table={'overflowX': 'auto'},
-        style_header={'backgroundColor': 'rgb(230, 230, 230)', 'fontWeight': 'bold'},
-        style_cell={'textAlign': 'left', 'padding': '10px'}
-    )
 
-    content = [
-        dbc.Row(dbc.Col(html.H1("Upload Your Pedigree Data", className="app-header", style=CUSTOM_CSS['header']))),
-        dbc.Row(dbc.Col(
-            html.P("Please upload your pedigree data file. The accepted format is .CSV. "
-                   "The file should contain the following columns:", style={'marginTop': '10px'})
-        )),
-        dbc.Row(dbc.Col(html.Ul([
-            html.Li("LineName: The name of the line."),
-            html.Li("MaleParent: The name of the male parent."),
-            html.Li("FemaleParent: The name of the female parent.")
-        ]))),
-        dbc.Row(dbc.Col(html.P("Below is an example of the correct format:", style={'marginTop': '10px'}))),
-        dbc.Row(dbc.Col(example_table, width=12)),
-        dbc.Row(dbc.Col(dcc.Upload(
-            id='upload-data',
-            children=html.Div(['Drag and Drop or ', html.A('Select Files')]),
-            style={
-                'width': '100%',
-                'height': '60px',
-                'lineHeight': '60px',
-                'borderWidth': '1px',
-                'borderStyle': 'dashed',
-                'borderRadius': '5px',
-                'textAlign': 'center',
-                'margin': '10px'
-            },
-            multiple=False
-        ))),
-        dbc.Row(dbc.Col(html.Div(id='upload-status', style={'textAlign': 'center', 'marginTop': '20px'}))),
-        dbc.Row(dbc.Col(html.A("Proceed to Main Page", href="/main-page",
-                               className="btn btn-primary", style=CUSTOM_CSS['button']))),
-    ]
-    return base_layout(content)
 
+# =============================================================================
+# C. Layout for Kinship Matrix page that takes decendants into consideration
+# =============================================================================
 
 def main_page_layout():
     """Improved layout for the main page."""
     content = [
+        # Row #1: Page title
         dbc.Row(
             dbc.Col(
                 html.H1(
@@ -368,11 +499,53 @@ def main_page_layout():
                 )
             )
         ),
+
+        # Row #2: Label for the slider
         dbc.Row([
-            dbc.Col(html.Label(
-                "Select or Paste Line Names (comma-separated):",
-                style={'font-weight': 'bold', 'margin-bottom': '10px'}
-            ), width=12),
+            dbc.Col(
+                html.Label("Select Calculation Method:", style={'font-weight': 'bold'}),
+                width=12
+            )
+        ]),
+
+        dbc.Row(
+            [
+                dbc.Col(
+                    html.Div(
+                        [
+                            dcc.Slider(
+                                id='kinship-method-slider',
+                                min=0,
+                                max=1,
+                                step=1,
+                                marks={
+                                    0: 'A Matrix (Henderson)',
+                                    1: 'Coancestry Matrix (Henderson)'
+                                },
+                                value=1,
+                                tooltip={"placement": "bottom", "always_visible": True},
+                            )
+                        ],
+                        style={'width': '300px'}
+                    ),
+                    width="auto"
+                )
+            ],
+            justify="center"  # <--- This will center the column horizontally
+        ),
+
+
+
+
+        # Row #4: Label + dropdown + input
+        dbc.Row([
+            dbc.Col(
+                html.Label(
+                    "Select or Paste Line Names (comma-separated):",
+                    style={'font-weight': 'bold', 'margin-bottom': '10px'}
+                ),
+                width=12
+            ),
             dbc.Col(
                 dcc.Dropdown(
                     id='line-name-dropdown',
@@ -393,12 +566,16 @@ def main_page_layout():
                 width=12
             )
         ], className="mb-4"),
+
+        # Row #5: Display selected lines
         dbc.Row(
             dbc.Col(
                 html.Ul(id="selected-line-names-list", children=[]),
                 style={'margin-top': '10px'}
             )
         ),
+
+        # Row #6: Buttons (Generate, Download, etc.)
         dbc.Row([
             dbc.Col(
                 html.Button(
@@ -432,16 +609,29 @@ def main_page_layout():
                 width=4
             )
         ], style={'margin-top': '20px'}, className="mb-4"),
+
+        # Row #7: Loading/feedback area
         dbc.Row(
             dbc.Col(
-                html.Div(id='loading-output', style={'margin-top': '20px'})
+                html.Div(
+                    id='loading-output',
+                    style={'margin-top': '20px'}
+                )
             )
         ),
+
+        # Row #8: Heatmap image
         dbc.Row(
             dbc.Col(
-                html.Img(id='heatmap-image', src='', style=CUSTOM_CSS['image'])
+                html.Img(
+                    id='heatmap-image',
+                    src='',
+                    style=CUSTOM_CSS['image']
+                )
             )
         ),
+
+        # Row #9: Subset selection
         dbc.Row([
             dbc.Col(
                 dcc.Dropdown(
@@ -453,116 +643,635 @@ def main_page_layout():
                 )
             )
         ], style={'margin-top': '20px'}),
+
+        # Hidden Divs, etc.
         html.Div(id='full-matrix-csv-path', style={'display': 'none'}),
-        dcc.Store(id='matrix-store')
+        dcc.Store(id='matrix-store'),
     ]
+
     return base_layout(content)
 
+# =============================================================================
+# D. Layout for Page with Family tree and other features
+# =============================================================================
 
-def progeny_finder_layout():
+def pedigree_explorer():
     """Layout for the progeny finder page."""
     content = [
-        dbc.Row(dbc.Col(dcc.Dropdown(
-            id='progeny-module-dropdown',
-            options=[
-                {'label': 'Lookup Progeny of Specific Pairing', 'value': 'specific-pairing'},
-                {'label': 'Lookup Progeny of Single Parent', 'value': 'single-parent'},
-                {'label': 'Generate Family Tree', 'value': 'family-tree'},
-                {'label': 'Generate Descendant Tree', 'value': 'descendant-tree'},
-                {'label': 'Generate Combined Family Tree for Two Lines', 'value': 'combined-family-tree'},
-                {'label': 'Generate Family Tree with Temporary Progeny', 'value': 'temp-progeny-tree'}
+        # Row #1: A dropdown for choosing progeny-module functions
+        dbc.Row([
+            dbc.Col(
+                dcc.Dropdown(
+                    id='progeny-module-dropdown',
+                    options=[
+                        {'label': 'Lookup Progeny of Specific Pairing', 'value': 'specific-pairing'},
+                        {'label': 'Lookup Progeny of Single Parent', 'value': 'single-parent'},
+                        {'label': 'Generate Family Tree', 'value': 'family-tree'},
+                        {'label': 'Generate Descendant Tree', 'value': 'descendant-tree'},
+                        {'label': 'Generate Combined Family Tree for Two Lines', 'value': 'combined-family-tree'},
+                        {'label': 'Generate Family Tree with Temporary Progeny', 'value': 'temp-progeny-tree'}
+                    ],
+                    multi=True,
+                    placeholder="Select up to two functions",
+                    style=CUSTOM_CSS['dropdown']
+                ),
+                width=12
+            )
+        ]),
+
+        # Row #2: A label for the slider
+        dbc.Row([
+            dbc.Col(
+                html.Label("Select Calculation Method:", style={'font-weight': 'bold'}),
+                width=12
+            )
+        ]),
+
+        dbc.Row(
+            [
+                dbc.Col(
+                    html.Div(
+                        [
+                            dcc.Slider(
+                                id='kinship-method-slider',
+                                min=0,
+                                max=1,
+                                step=1,
+                                marks={
+                                    0: 'A Matrix (Henderson)',
+                                    1: 'Coancestry Matrix (Henderson)'
+                                },
+                                value=1,
+                                tooltip={"placement": "bottom", "always_visible": True},
+                            )
+                        ],
+                        style={'width': '300px'}
+                    ),
+                    width="auto"
+                )
             ],
-            multi=True,
-            placeholder="Select up to two functions",
-            style=CUSTOM_CSS['dropdown']
-        ))),
+            justify="center"  # <--- This will center the column horizontally
+        ),
+
+        # Row #4: A placeholder div for dynamic modules
         html.Div(id='selected-progeny-modules', children=[]),
-        dbc.Row(dbc.Col(html.A("Back to Main Page", href="/main-page",
-                               className="btn btn-secondary", style=CUSTOM_CSS['button']))),
+
+        # Row #5: A single column with a "Back to Main Page" link
+        dbc.Row([
+            dbc.Col(
+                html.A(
+                    "Back to Main Page",
+                    href="/main-page",
+                    className="btn btn-secondary",
+                    style=CUSTOM_CSS['button']
+                ),
+                width=12
+            )
+        ]),
     ]
+
     return base_layout(content)
 
+# =============================================================================
+# D. Layout for Page with Family tree and other features
+# =============================================================================
 
-def dummy_progeny_matrix_layout():
-    """Layout for the dummy progeny matrix page."""
+def add_temp_entries():
     content = [
-        dbc.Row(dbc.Col(html.H3("Add Pedigree Entries", className="app-header", style=CUSTOM_CSS['header']))),
+        dbc.Row(
+            dbc.Col(
+                html.H3("Add Pedigree Entries",
+                        style=CUSTOM_CSS['header'])
+            )
+        ),
+
+        # File upload area for a tab-delimited .txt
+        dbc.Row(
+            [
+                dbc.Col(html.Label("Upload .txt pedigree entries:")),
+                dbc.Col(
+                    dcc.Upload(
+                        id='add-ped-upload',
+                        children=html.Div([
+                            "Drag & Drop or ",
+                            html.A("Select .txt File")
+                        ]),
+                        style={
+                            'width': '100%', 'height': '60px', 'lineHeight': '60px',
+                            'borderWidth': '1px', 'borderStyle': 'dashed',
+                            'borderRadius': '5px', 'textAlign': 'center'
+                        },
+                        multiple=False
+                    ),
+                    width=6
+                ),
+                dbc.Col(
+                    html.Div(id='add-ped-upload-status', style={'color': 'green'}),
+                    width=12
+                )
+            ]
+        ),
+
+        html.Hr(),
+
+        # Display rows with missing parents needing correction
         dbc.Row([
-            dbc.Col(dcc.Input(
-                id='dummy-progeny-name',
-                type='text',
-                placeholder="Enter Dummy Progeny Name",
-                style={'marginBottom': '10px'}
-            )),
-            dbc.Col(dcc.Dropdown(
-                id='temp-female-parent-dropdown-main',
-                options=[{'label': name, 'value': name} for name in df['LineName'].unique()],
-                multi=False,
-                placeholder="Select Female Parent",
-                style=CUSTOM_CSS['dropdown']
-            )),
-            dbc.Col(dcc.Dropdown(
-                id='temp-male-parent-dropdown-main',
-                options=[{'label': name, 'value': name} for name in df['LineName'].unique()],
-                multi=False,
-                placeholder="Select Male Parent",
-                style=CUSTOM_CSS['dropdown']
-            )),
-            dbc.Col(html.Button("Add Dummy Progeny", id="add-temp-progeny-main-button",
-                                className="btn btn-warning", style=CUSTOM_CSS['button'])),
-            dbc.Col(html.Button("Reset Dummy Progeny", id="reset-temp-progeny-main-button",
-                                className="btn btn-danger", style=CUSTOM_CSS['button']))
+            dbc.Col(html.H4("Rows Needing Parent Corrections:"), width=12),
+            dbc.Col(html.Div(id='add-ped-missing-parents-table'), width=12)
         ]),
-        dbc.Row(dbc.Col(html.Div(id='temp-progeny-list-main'))),
+
+        # Stores for invalid and valid rows
+        dcc.Store(id='add-ped-missing-rows-store'),
+        dcc.Store(id='add-ped-rows-store'),
+
+        html.Hr(),
+
+        # Button to navigate to subset calculation page
         dbc.Row([
-            dbc.Col(html.Button("Get Matrix", id="generate-amatrix-button-dummy",
-                                className="btn btn-info", style=CUSTOM_CSS['button']),
-                    width=3),
-            dbc.Col(html.A("Download Full Matrix", id='download-full-link-dummy',
-                           href='', download='full_matrix.csv',
-                           className="btn btn-success", style=CUSTOM_CSS['button'])),
-            dbc.Col(html.A("Download Subset Matrix", id='download-subset-link-dummy',
-                           href='', download='subset_matrix.csv',
-                           className="btn btn-warning", style=CUSTOM_CSS['button']))
-        ]),
-        dbc.Row(dbc.Col(html.Div(id='loading-output-dummy'))),
-        dbc.Row(dbc.Col(html.Img(id='heatmap-image-dummy', src='', style=CUSTOM_CSS['image']))),
+            dbc.Col(
+                html.A(
+                    "Proceed to Subset Matrix Calculation",
+                    href="/subset-pedigree-page",
+                    className="btn btn-primary",
+                    style=CUSTOM_CSS['button']
+                ),
+                width=12
+            )
+        ], style={'margin-top': '20px'}),
+
+        html.Hr(),
+
+        # Button to return to main page
         dbc.Row([
-            dbc.Col(dcc.Dropdown(
-                id='subset-dropdown-dummy',
-                options=[],
-                multi=True,
-                placeholder="Subset A-Matrix",
-                style=CUSTOM_CSS['dropdown']
-            ))
+            dbc.Col(
+                html.A(
+                    "Back to Main Page",
+                    href="/main-page",
+                    className="btn btn-secondary",
+                    style=CUSTOM_CSS['button']
+                ),
+                width=12
+            )
         ]),
-        html.Div(id='full-matrix-csv-path-dummy', style={'display': 'none'}),
-        dcc.Store(id='matrix-store-dummy')
     ]
     return base_layout(content)
 
 
-app.layout = html.Div([
-    dcc.Location(id='url', refresh=False),
-    html.Div(id='page-content')
-])
 
 
-# -------------------------
-# Page Navigation Callbacks
-# -------------------------
-@app.callback(Output('page-content', 'children'),
-              [Input('url', 'pathname')])
+
+
+# =============================================================================
+# D. Kinship matrix calculation without descendants
+# =============================================================================
+def subset_pedigree_page_layout():
+    """
+    A page layout where the user can pick lines of interest either by selecting
+    from a dropdown or pasting a comma-separated list. The code then builds a
+    reduced pedigree (lines + ancestors only) and computes the A-matrix for that subset.
+    """
+    content = [
+        # Row #1: Page header
+        dbc.Row(
+            dbc.Col(
+                html.H3(
+                    "Subset Pedigree: Lines of Interest + Ancestors",
+                    style=CUSTOM_CSS['header']
+                )
+            )
+        ),
+
+        # Row #2: Dropdown for lines of interest
+        dbc.Row([
+            dbc.Col(
+                dcc.Dropdown(
+                    id='subset-pedigree-lines-dropdown',
+                    options=[{'label': ln, 'value': ln} for ln in df['LineName'].unique()],
+                    multi=True,
+                    placeholder="Select lines of interest...",
+                    style=CUSTOM_CSS['dropdown']
+                ),
+                width=12
+            )
+        ]),
+
+        # Row #3: Input for comma-separated lines
+        dbc.Row([
+            dbc.Col(
+                dcc.Input(
+                    id='subset-pedigree-paste-input',
+                    type='text',
+                    placeholder="Paste comma-separated line names here...",
+                    style={'margin-top': '10px', 'width': '100%'}
+                ),
+                width=12
+            )
+        ]),
+
+        # Row #4: Label for slider
+        dbc.Row([
+            dbc.Col(
+                html.Label("Select Calculation Method:", style={'font-weight': 'bold'}),
+                width=12
+            )
+        ]),
+
+        dbc.Row(
+            [
+                dbc.Col(
+                    html.Div(
+                        [
+                            dcc.Slider(
+                                id='kinship-method-slider',
+                                min=0,
+                                max=1,
+                                step=1,
+                                marks={
+                                    0: 'A Matrix (Henderson)',
+                                    1: 'Coancestry Matrix (Henderson)'
+                                },
+                                value=1,
+                                tooltip={"placement": "bottom", "always_visible": True},
+                            )
+                        ],
+                        style={'width': '300px'}
+                    ),
+                    width="auto"
+                )
+            ],
+            justify="center"  # <--- This will center the column horizontally
+        ),
+
+        # Row #6: "Build Subset & Compute Matrix" button
+        dbc.Row([
+            dbc.Col(
+                html.Button(
+                    "Build Subset & Compute Matrix",
+                    id="subset-build-matrix-button",
+                    className="btn btn-info",
+                    style=CUSTOM_CSS['button']
+                ),
+                width=12
+            )
+        ]),
+
+        # Row #7: Output area for subset-pedigree-output
+        dbc.Row([
+            dbc.Col(
+                html.Div(
+                    id='subset-pedigree-output',
+                    style={'marginTop': '20px'}
+                ),
+                width=12
+            )
+        ]),
+
+        html.Hr(),
+
+        # Row #8: Subset the computed matrix label
+        dbc.Row([
+            dbc.Col(
+                html.H4("Subset the Computed Matrix"),
+                width=12
+            )
+        ]),
+
+        html.Div(id='subset-pedigree-full-matrix-csv-path', style={'display': 'none'}),
+        dcc.Store(id='subset-pedigree-matrix-store'),
+
+        # Row #9: Sub-subsetting the matrix
+        dbc.Row([
+            dbc.Col(
+                dcc.Dropdown(
+                    id='subset-pedigree-subset-dropdown',
+                    options=[],
+                    multi=True,
+                    placeholder="Select lines for subset matrix...",
+                    style=CUSTOM_CSS['dropdown']
+                ),
+                width=9
+            ),
+            dbc.Col(
+                html.A(
+                    "Download Subset Matrix",
+                    id='subset-pedigree-download-subset-link',
+                    href='',
+                    download='subset_matrix.csv',
+                    className="btn btn-warning",
+                    style=CUSTOM_CSS['button']
+                ),
+                width=3
+            )
+        ], style={'margin-top': '20px'}),
+
+        # Row #10: Pasting lines for sub-subset
+        dbc.Row([
+            dbc.Col(
+                dcc.Input(
+                    id='subset-pedigree-subset-paste-input',
+                    type='text',
+                    placeholder="Paste comma-separated line names here...",
+                    style={'width': '100%'}
+                ),
+                width=12
+            )
+        ], style={'margin-top': '20px'}),
+
+        # Row #11: Display sub-subset table
+        dbc.Row([
+            dbc.Col(
+                html.Div(id='subset-pedigree-subset-display'),
+                width=12
+            )
+        ]),
+
+        # Row #12: "Back to Main Page"
+        dbc.Row([
+            dbc.Col(
+                html.A(
+                    "Back to Main Page",
+                    href="/main-page",
+                    className="btn btn-secondary",
+                    style=CUSTOM_CSS['button']
+                ),
+                width=12
+            )
+        ]),
+    ]
+
+    return base_layout(content)
+
+#endregion
+
+
+
+
+#region Return Selected_Lines
+
+
+@app.callback(
+    Output('subset-pedigree-lines-dropdown', 'value'),
+    [Input('subset-pedigree-lines-dropdown', 'value'),
+     Input('subset-pedigree-paste-input', 'value')]
+)
+def update_subset_line_selection(selected_lines, pasted_lines):
+    if pasted_lines:
+        pasted_list = [name.strip() for name in pasted_lines.split(',')]
+        all_lines = df['LineName'].unique()
+        valid_lines = [line for line in pasted_list if line in all_lines]
+        if selected_lines:
+            valid_lines = list(set(selected_lines + valid_lines))
+        return valid_lines
+    return selected_lines
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+@app.callback(
+    Output('line-name-dropdown', 'value'),
+    [Input('line-name-dropdown', 'value'),
+     Input('paste-line-names', 'value')]
+)
+def update_line_selection(selected_lines, pasted_lines):
+    if pasted_lines:
+        pasted_list = [name.strip() for name in pasted_lines.split(',')]
+        all_lines = df['LineName'].unique()
+        valid_lines = [line for line in pasted_list if line in all_lines]
+        if selected_lines:
+            valid_lines = list(set(selected_lines + valid_lines))
+        return valid_lines
+    return selected_lines
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+@app.callback(
+    Output('subset-pedigree-subset-dropdown', 'value'),
+    [
+        Input('subset-pedigree-subset-dropdown', 'value'),
+        Input('subset-pedigree-subset-paste-input', 'value')
+    ],
+    [State('subset-pedigree-matrix-store', 'data')]
+)
+def update_subset_pedigree_sub_subset(selected_lines, pasted_lines, matrix_data):
+    """
+    Merge pasted line names into the dropdown's current selection.
+    Only keep lines that actually exist in the matrix's index.
+    """
+    # If we haven't computed/loaded the matrix yet, do nothing
+    if not matrix_data:
+        return selected_lines or []
+
+    # Convert the stored dictionary back to a DataFrame to get valid line names
+    current_amatrix = pd.DataFrame(matrix_data)
+    valid_line_names = current_amatrix.index.tolist()
+
+    # Start from whichever lines are currently selected in the dropdown
+    selected_lines = selected_lines or []
+
+    if pasted_lines:
+        # Split the pasted text on commas
+        pasted_list = [name.strip() for name in pasted_lines.split(',')]
+        # Keep only those which exist in the matrix
+        valid_pasted = [ln for ln in pasted_list if ln in valid_line_names]
+        # Merge them with the already selected lines
+        selected_lines = list(set(selected_lines + valid_pasted))
+
+    return selected_lines
+
+
+#endregion
+
+#region Subset pedigree matrix logic
+def build_subset_pedigree(lines_of_interest, full_pedigree_df):
+    """
+    Given a list of target lines, returns a subset DataFrame containing
+    only those lines + all of their ancestors (paternal and maternal).
+    Descendants (i.e., progeny) that are irrelevant to these lines
+    are excluded, preventing huge expansions of the pedigree.
+    """
+    relevant_lines = set(lines_of_interest)
+
+    def collect_ancestors(line_name):
+        sub = full_pedigree_df[full_pedigree_df["LineName"] == line_name]
+        if sub.empty:
+            return
+        male_parent = sub.iloc[0]["MaleParent"]
+        female_parent = sub.iloc[0]["FemaleParent"]
+
+        if pd.notna(male_parent) and male_parent not in relevant_lines:
+            relevant_lines.add(male_parent)
+            collect_ancestors(male_parent)
+
+        if pd.notna(female_parent) and female_parent not in relevant_lines:
+            relevant_lines.add(female_parent)
+            collect_ancestors(female_parent)
+
+    for line in lines_of_interest:
+        collect_ancestors(line)
+
+    subset_df = full_pedigree_df[full_pedigree_df["LineName"].isin(relevant_lines)].copy()
+    return subset_df
+
+
+@app.callback(
+    [
+        Output('subset-pedigree-output', 'children'),
+        Output('subset-pedigree-matrix-store', 'data'),
+        Output('subset-pedigree-full-matrix-csv-path', 'children')
+    ],
+    Input('subset-build-matrix-button', 'n_clicks'),
+    State('subset-pedigree-lines-dropdown', 'value'),
+    State('kinship-method-slider', 'value')  # <--- add slider State
+)
+def compute_subset_matrix(n_clicks, selected_lines, method_choice):
+    if not n_clicks or not selected_lines:
+        return dash.no_update, dash.no_update, dash.no_update
+
+    subset_df = build_subset_pedigree(selected_lines, df)
+
+        # Decide which function to call:
+    if method_choice == 0:
+        A_sub = compute_amatrix_diploid(subset_df)
+    elif method_choice == 1:
+        A_sub = compute_amatrix_polyploid(subset_df)
+
+
+
+    n_lines = len(A_sub)
+    if n_lines == 0:
+        return "No lines found in subset.", {}, ""
+
+    # Plot either a clustermap or simple heatmap
+    if n_lines <= MAX_CLUSTER_SIZE:
+        heatmap_plot = sns.clustermap(
+            A_sub,
+            method='average',
+            cmap='Spectral',
+            figsize=(12, 8),
+            row_cluster=True,
+            col_cluster=True
+        )
+        plt.close(heatmap_plot.fig)
+        heatmap_buf = BytesIO()
+        heatmap_plot.savefig(heatmap_buf, format='png')
+        heatmap_buf.seek(0)
+        encoded_heatmap = base64.b64encode(heatmap_buf.read()).decode('utf-8')
+        heatmap_src = f"data:image/png;base64,{encoded_heatmap}"
+    else:
+        plt.figure(figsize=(12, 8))
+        sns.heatmap(A_sub, cmap='Spectral')
+        plt.title(f"Heatmap (No Clustering) for {n_lines} lines > {MAX_CLUSTER_SIZE}")
+        heatmap_buf = BytesIO()
+        plt.savefig(heatmap_buf, format='png')
+        heatmap_buf.seek(0)
+        plt.close()
+        encoded_heatmap = base64.b64encode(heatmap_buf.read()).decode('utf-8')
+        heatmap_src = f"data:image/png;base64,{encoded_heatmap}"
+
+    # Save CSV
+    file_name = f"subset_pedigree_matrix_{int(time.time())}.csv"
+    file_path = os.path.join(OUTPUT_DIR, file_name)
+    A_sub.to_csv(file_path)
+    safe_filename_subset = urllib.parse.quote(file_path)
+    # We'll store it in a hidden div so that we can use it for subset downloading
+    download_link = f'/download?filename={safe_filename_subset}&type=subset'
+
+    # Also store the matrix in a dictionary so we can re-subset it
+    matrix_dict = A_sub.to_dict()
+
+    return (
+        html.Div([
+            html.Img(
+                src=heatmap_src,
+                style={'width': '100%', 'maxHeight': '800px', 'overflow': 'auto'}
+            ),
+            html.Hr(),
+            html.A(
+                "Download Subset Matrix CSV",
+                href=download_link,
+                className="btn btn-warning",
+                style=CUSTOM_CSS['button']
+            )
+        ]),
+        matrix_dict,  # for subset usage
+        file_path     # store the file path for potential direct referencing
+    )
+
+
+# <<< ADDED: Now replicate the logic for subsetting that matrix >>>
+@app.callback(
+    Output('subset-pedigree-subset-dropdown', 'options'),
+    Input('subset-pedigree-matrix-store', 'data')
+)
+def update_subset_pedigree_dropdown_options(matrix_data):
+    if not matrix_data:
+        return []
+    current_amatrix = pd.DataFrame(matrix_data)
+    line_names = current_amatrix.index.tolist()
+    return [{'label': ln, 'value': ln} for ln in line_names]
+
+
+@app.callback(
+    Output('subset-pedigree-subset-display', 'children'),
+    Input('subset-pedigree-subset-dropdown', 'value'),
+    State('subset-pedigree-matrix-store', 'data')
+)
+def display_subset_pedigree_matrix(subset_values, matrix_data):
+    if not subset_values or not matrix_data:
+        return ""
+    current_amatrix = pd.DataFrame(matrix_data)
+    subset_amatrix = current_amatrix.loc[subset_values, subset_values]
+
+    table_header = [
+        html.Thead(
+            html.Tr([html.Th('')] + [html.Th(col) for col in subset_amatrix.columns])
+        )
+    ]
+    table_body = [
+        html.Tbody([
+            html.Tr([html.Td(subset_amatrix.index[i])] +
+                    [html.Td(subset_amatrix.iloc[i, j]) for j in range(len(subset_amatrix.columns))])
+            for i in range(len(subset_amatrix))
+        ])
+    ]
+    return html.Table(table_header + table_body, className="table")
+
+
+@app.callback(
+    Output('subset-pedigree-download-subset-link', 'href'),
+    Input('subset-pedigree-subset-dropdown', 'value'),
+    State('subset-pedigree-matrix-store', 'data')
+)
+def update_subset_pedigree_matrix_download_link(subset_values, matrix_data):
+    if not subset_values or not matrix_data:
+        return dash.no_update
+    current_amatrix = pd.DataFrame(matrix_data)
+    subset_amatrix = current_amatrix.loc[subset_values, subset_values]
+    file_name = f"subset_pedigree_resubset_{int(time.time())}.csv"
+    file_path = os.path.join(OUTPUT_DIR, file_name)
+    subset_amatrix.to_csv(file_path)
+    safe_filename_subset = urllib.parse.quote(file_path)
+    return f'/download?filename={safe_filename_subset}&type=subset'
+# <<< END ADDED >>>
+
+
+
+
+
+
+#endregion
+
+#region Logic behind webpage
+@app.callback(Output('page-content', 'children'), [Input('url', 'pathname')])
 def display_page(pathname):
     """Displays the appropriate page based on the URL path."""
     if pathname == '/main-page':
         return main_page_layout()
     elif pathname == '/progeny-finder':
-        return progeny_finder_layout()
+        return pedigree_explorer()
     elif pathname == '/dummy-progeny-matrix':
-        return dummy_progeny_matrix_layout()
-    elif pathname == '/upload':
-        return upload_page_layout()
+        return add_temp_entries()
+    elif pathname == '/subset-pedigree-page':
+        return subset_pedigree_page_layout()
     else:
         return splash_page_layout()
 
@@ -595,22 +1304,78 @@ def navigate_pages(home_clicks):
     return dash.no_update
 
 
+#endregion
+
+#region Logic behind Updating the view data modal
+
+
+@app.callback(
+    Output('data-modal', 'is_open'),
+    [Input('view-data-button', 'n_clicks'),
+     Input('close-data-modal', 'n_clicks')],
+    [State('data-modal', 'is_open')]
+)
+def toggle_data_modal(view_clicks, close_clicks, is_open):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return is_open
+    return not is_open
+
+
+
+
+
+@app.callback(
+    Output('current-data-table', 'children'),
+    Input('data-store', 'data')
+)
+def update_current_data_table(data):
+    if not data:
+        return "No data available."
+
+    # Create table headers from keys of the first record
+    headers = list(data[0].keys())
+    table_header = html.Thead(html.Tr([html.Th(col) for col in headers]))
+
+    # Create table rows for each record
+    table_body = html.Tbody([
+        html.Tr([html.Td(record.get(col, "")) for col in headers]) for record in data
+    ])
+
+    return html.Table([table_header, table_body], className="table")
+
+
+@app.callback(
+    Output('data-store', 'data'),
+    Input('clear-data-button', 'n_clicks'),  # or any callback that modifies your dataset
+    prevent_initial_call=True
+)
+def update_data_store(n_clicks):
+    # When clearing data, reset to the original sugarcane dataset.
+    global df, default_df
+    if n_clicks:
+        df = default_df.copy()
+    return df.to_dict('records')
+
+#endregion
+
+
+
+
+#region Logic behind adding data and the web elements associated
+
 # =============================================================================
 # 3. Callback to Clear Data (reset df to default_df)
 # =============================================================================
 @app.callback(
-    Output('clear-data-button', 'children'),
+    [Output('clear-data-button', 'children'),
+     Output('data-store', 'data', allow_duplicate=True)],
     Input('clear-data-button', 'n_clicks'),
     prevent_initial_call=True
 )
 def clear_uploaded_data(n_clicks):
-    """
-    Resets the global df to the default built-in sugarcane data
-    when the trash button is clicked.
-    """
+    global df, default_df, filtered_df, parents_set
     if n_clicks:
-        global df, filtered_df, parents_set
-
         df = default_df.copy()
         parents_set = set(df['MaleParent'].tolist() + df['FemaleParent'].tolist())
         mask = (
@@ -619,15 +1384,11 @@ def clear_uploaded_data(n_clicks):
             & (df['FemaleParent'].isna() | df['FemaleParent'].isnull())
         )
         filtered_df = df[~mask]
-
-        # Update the button's children to reflect success (optional)
-        return [html.I(className="fas fa-trash"), " Cleared!"]
-    return dash.no_update
+        return [html.I(className="fas fa-trash"), " Cleared!"], default_df.to_dict('records')
+    return dash.no_update, dash.no_update
 
 
-# -----------------------
-# Splash Data Modal Stuff
-# -----------------------
+
 @app.callback(
     Output('splash-upload-section', 'style'),
     Input('splash-data-choice', 'value')
@@ -636,6 +1397,8 @@ def toggle_splash_upload_section(choice):
     if choice == 'upload':
         return {'display': 'block'}
     return {'display': 'none'}
+
+
 
 
 @app.callback(
@@ -665,7 +1428,6 @@ def upload_file_splash(contents, filename):
             & (df['FemaleParent'].isna() | df['FemaleParent'].isnull())
         )
         filtered_df = df[~mask]
-
         return f"Successfully uploaded {filename}"
     except Exception as e:
         print(e)
@@ -683,9 +1445,37 @@ def close_splash_modal(n_clicks, is_open):
     return is_open
 
 
-# ------------------------------------
-# Pedigree / Family Tree Helper Funcs
-# ------------------------------------
+@app.callback(
+    Output('make-df-status', 'children'),
+    Input('make-df-button', 'n_clicks'),
+    State('data-store', 'data'),
+    prevent_initial_call=True
+)
+def make_df_from_store(n_clicks, store_data):
+    global df, filtered_df, parents_set
+    if n_clicks:
+        # Convert stored data to DataFrame
+        new_df = pd.DataFrame(store_data)
+        df = new_df.copy()
+        # Recalculate the filtered dataframe based on updated df
+        parents_set = set(df['MaleParent'].tolist() + df['FemaleParent'].tolist())
+        mask = (
+            ~df['LineName'].isin(parents_set)
+            & (df['MaleParent'].isna() | df['MaleParent'].isnull())
+            & (df['FemaleParent'].isna() | df['FemaleParent'].isnull())
+        )
+        filtered_df = df[~mask]
+        return "Global df updated from store."
+    return ""
+
+
+
+
+
+#endregion
+
+#region Find Ancestors/Descendants/Relatives
+
 def find_ancestors(line_name, df, ancestors=None, relationships=None, generation=0, generations=None):
     if ancestors is None:
         ancestors = set()
@@ -715,7 +1505,6 @@ def find_ancestors(line_name, df, ancestors=None, relationships=None, generation
                 generations[generation + 1].append(female_parent)
                 find_ancestors(female_parent, df, ancestors, relationships, generation + 1, generations)
     else:
-        # If there's no row for line_name, just add it to ancestors anyway
         ancestors.add(line_name)
 
     generations[generation].append(line_name)
@@ -768,10 +1557,12 @@ def find_relatives(line_names, df):
         for g, lines in gens.items():
             generations[g].extend(lines)
 
-    # Combine the sets + original lines themselves
     all_relatives = list(all_ancestors.union(all_descendants).union(line_names))
     return all_relatives, all_relationships, generations
 
+#endregion
+
+#region Maternal and Paternal Line logic
 
 def get_maternal_line(line_name, df, collected=None):
     if collected is None:
@@ -796,6 +1587,9 @@ def get_paternal_line(line_name, df, collected=None):
             get_paternal_line(male_parent, df, collected)
     return collected
 
+#endregion
+
+#region Matrix Math and Sorting
 
 def sort_pedigree_df(pedigree_df):
     """
@@ -813,74 +1607,63 @@ def sort_pedigree_df(pedigree_df):
             sire = row.iloc[0]['MaleParent']
             dam = row.iloc[0]['FemaleParent']
 
-            # First recurse on parents
             if pd.notna(sire) and sire in pedigree_df['LineName'].values:
                 add_to_sorted_df(sire)
             if pd.notna(dam) and dam in pedigree_df['LineName'].values:
                 add_to_sorted_df(dam)
 
-            # Now add this row
             nonlocal sorted_df
             sorted_df = pd.concat([sorted_df, row], ignore_index=True)
             processed.add(line_name)
 
-    # Recurse over all lines
     for ln in pedigree_df['LineName']:
         add_to_sorted_df(ln)
 
     return sorted_df
 
-# ==================
-# NEW: Numba JIT
-# ==================
+
 @njit
 def _build_matrix_numba(n, sire_idxs, dam_idxs):
     """
-    Core Henderson logic, compiled by Numba for speed.
-    sire_idxs[i], dam_idxs[i] = the row indices of the sire and dam for individual i,
-    or -1 if unknown.
+    Core Henderson logic for diploid species.
     """
     A = np.zeros((n, n), dtype=np.float64)
     for i in range(n):
         s_i = sire_idxs[i]
         d_i = dam_idxs[i]
         if s_i == -1 and d_i == -1:
-            # No known parents
             A[i, i] = 1.0
         elif s_i != -1 and d_i == -1:
-            # Only sire known
             A[i, i] = 1.0
             A[i, :i] = 0.5 * A[s_i, :i]
             A[:i, i] = A[i, :i]
         elif s_i == -1 and d_i != -1:
-            # Only dam known
             A[i, i] = 1.0
             A[i, :i] = 0.5 * A[d_i, :i]
             A[:i, i] = A[i, :i]
         else:
-            # Both parents known
             A[i, i] = 1.0 + 0.5 * A[s_i, d_i]
             temp = 0.5 * (A[s_i, :i] + A[d_i, :i])
             A[i, :i] = temp
             A[:i, i] = temp
     return A
 
-
-def compute_amatrix_diploid_revised(pedigree_df):
+def compute_amatrix_diploid(pedigree_df):
     """
-    Builds the additive relationship matrix (A-matrix) using a single-pass,
-    topologically sorted method (Henderson's approach) for diploid organisms,
-    with a Numba-compiled core for speed.
+    Builds the additive relationship matrix (A-matrix) using Henderson’s Method (Diploid),
+    treating 'unknown' (case-insensitive) exactly like missing parents.
     """
-    # 1. Topologically sort the pedigree so parents come before children.
+    # Sort the pedigree so parents appear before offspring
     sorted_df = sort_pedigree_df(pedigree_df)
 
-    # 2. Extract the sorted list of individuals.
+    # List of individuals in sorted order
     individuals = sorted_df['LineName'].tolist()
+
+    # Map each individual to its matrix index
     idx_map = {ind: i for i, ind in enumerate(individuals)}
     n = len(individuals)
 
-    # Build arrays of sire, dam row indexes
+    # Arrays to hold the sire/dam indices for each individual
     sire_idxs = np.full(n, -1, dtype=np.int64)
     dam_idxs = np.full(n, -1, dtype=np.int64)
 
@@ -888,22 +1671,38 @@ def compute_amatrix_diploid_revised(pedigree_df):
         row = sorted_df.iloc[i]
         sire = row['MaleParent']
         dam = row['FemaleParent']
-        if pd.notna(sire) and sire in idx_map:
+
+        # Treat NaN or 'unknown'/'Unknown' as no parent
+        if pd.notna(sire) and str(sire).lower() != 'unknown' and sire in idx_map:
             sire_idxs[i] = idx_map[sire]
-        if pd.notna(dam) and dam in idx_map:
+
+        if pd.notna(dam) and str(dam).lower() != 'unknown' and dam in idx_map:
             dam_idxs[i] = idx_map[dam]
 
-    # 3. Use the JIT-compiled method to build the matrix
+    # Build the relationship matrix via Numba-accelerated Henderson logic
     A = _build_matrix_numba(n, sire_idxs, dam_idxs)
-
-    # Convert to a labeled DataFrame
-    A_df = pd.DataFrame(A, index=individuals, columns=individuals)
-    return A_df
+    return pd.DataFrame(A, index=individuals, columns=individuals)
 
 
-# -------------------
-# Descendant Tree CB
-# -------------------
+def compute_amatrix_polyploid(pedigree_df):
+
+    sorted_df = sort_pedigree_df(pedigree_df)
+    individuals = sorted_df['LineName'].tolist()
+
+
+
+    """
+    Same Henderson logic as diploid, but all values are divided by 2.
+    """
+    A_dip = compute_amatrix_diploid(pedigree_df)
+    A_poly = A_dip / 2.0
+
+
+    return pd.DataFrame(A_poly, index=individuals, columns=individuals)
+
+#endregion
+
+#region Descendant Tree
 @app.callback(
     Output('descendant-tree-image', 'children'),
     [Input('generate-descendant-tree-button', 'n_clicks')],
@@ -915,30 +1714,26 @@ def generate_descendant_tree(n_clicks, selected_line_name):
 
     all_descendants, relationships, generations = find_descendants(selected_line_name, filtered_df)
     subset_descendants = set()
-    subset_relationships = []
-
-    # Collect descendants by generation, no slider here so we take all.
     for gen in range(max(generations.keys()) + 1):
         subset_descendants.update(generations[gen])
 
+    subset_relationships = []
     for parent, child, role in relationships:
         if parent in subset_descendants and child in subset_descendants:
             subset_relationships.append((parent, child, role))
 
     dot = graphviz.Digraph(comment='Descendant Tree')
     dot.attr('node', shape='ellipse', style='filled')
-
     for descendant in subset_descendants:
         label = f"{descendant}"
         node_color = 'lightgrey'
         if descendant == selected_line_name:
-            node_color = 'green'  # highlight the root line for clarity
+            node_color = 'green'
         dot.node(descendant, label=label, fillcolor=node_color, fontcolor='black', color='black')
 
     for parent, child, role in subset_relationships:
         dot.edge(parent, child, color='black')
 
-    # Convert to PNG
     tree_buffer = BytesIO()
     tree_buffer.write(dot.pipe(format='png'))
     tree_buffer.seek(0)
@@ -946,10 +1741,10 @@ def generate_descendant_tree(n_clicks, selected_line_name):
     tree_src = f'data:image/png;base64,{encoded_tree}'
     return html.Img(src=tree_src, style=CUSTOM_CSS['image'])
 
+#endregion
 
-# -------------------------
-# Family Tree Slider & CBs
-# -------------------------
+#region Family tree generation and generation depth slider
+
 @app.callback(
     [Output('generation-depth-slider', 'max'),
      Output('generation-depth-slider', 'marks'),
@@ -979,112 +1774,141 @@ def update_generation_depth_slider(selected_line_name):
     ],
     [
         State('family-tree-dropdown', 'value'),
-        State('generation-depth-slider', 'value')
+        State('generation-depth-slider', 'value'),
+        State('kinship-method-slider', 'value')
     ]
 )
-def generate_family_tree(n_clicks, lineage_mode, selected_line_name, generation_depth):
-    """
-    Generates a family tree that can highlight maternal/paternal lines or color by kinship.
-    """
+def generate_family_tree(n_clicks, lineage_mode, selected_line_name, generation_depth, method_choice):
     if not n_clicks or not selected_line_name:
         return dash.no_update
 
-    # 1. Gather all ancestors + relationships for the selected line.
+    # Compute the full family tree for the selected line
     all_ancestors, relationships, generations = find_ancestors(selected_line_name, filtered_df)
+    full_nodes = all_ancestors.union({selected_line_name})
 
-    # 2. Subset only ancestors up to `generation_depth`.
-    subset_ancestors = set()
+    # Compute the full kinship matrix using all relatives from the complete tree
+    full_relatives_df = filtered_df[filtered_df['LineName'].isin(full_nodes)]
+    sorted_full_relatives_df = sort_pedigree_df(full_relatives_df)
+    if method_choice == 0:
+        full_amatrix = compute_amatrix_diploid(sorted_full_relatives_df)
+    elif method_choice == 1:
+        full_amatrix = compute_amatrix_polyploid(sorted_full_relatives_df)
+
+    # Compute the visual subset based on slider (generation depth)
+    subset_nodes = set()
     for gen in range(generation_depth + 1):
-        subset_ancestors.update(generations.get(gen, []))
+        subset_nodes.update(generations.get(gen, []))
+    subset_nodes.add(selected_line_name)  # Ensure the selected line is included
 
-    # 3. Build a subset pedigree df for these ancestors, compute an A-matrix to get kinship.
-    relatives_df = filtered_df[filtered_df['LineName'].isin(subset_ancestors)]
-    sorted_relatives_df = sort_pedigree_df(relatives_df)
-    subset_amatrix = compute_amatrix_diploid_revised(sorted_relatives_df)
+    # Use the full kinship matrix for coloring: only get values for nodes that are in the visual subset.
+    kinship_values = {line: full_amatrix.loc[selected_line_name, line]
+                      for line in full_amatrix.index if line in subset_nodes}
 
-    # If the selected line isn't in the matrix, just display a trivial graph.
-    if selected_line_name not in subset_amatrix.index:
-        dot = graphviz.Digraph(comment='Family Tree')
-        dot.node(selected_line_name)
-        tree_buf = BytesIO()
-        tree_buf.write(dot.pipe(format='png'))
-        tree_buf.seek(0)
-        enc_tree = base64.b64encode(tree_buf.read()).decode('utf-8')
-        return html.Img(src=f'data:image/png;base64,{enc_tree}', style=CUSTOM_CSS['image'])
+    # Also, restrict relationships to nodes in the visual subset
+    subset_relationships = [(p, c, role) for p, c, role in relationships
+                            if p in subset_nodes and c in subset_nodes]
 
-    # Extract kinship values for color shading (if lineage_mode=='none').
-    kinship_values = {
-        line: subset_amatrix.loc[selected_line_name, line]
-        for line in subset_amatrix.index
-    }
+    # Classification for node styling remains the same
+    founders = set()
+    poly_founders = set()
+    half_defined = set()
+    fully_defined = set()
+    parent_count = {line: 0 for line in subset_nodes}
+    for parent, child, _ in subset_relationships:
+        if child in parent_count:
+            parent_count[child] += 1
 
-    # Determine maternal/paternal sets if highlighting.
-    maternal_line = set()
-    paternal_line = set()
-    if lineage_mode in ['maternal', 'both']:
-        maternal_line = set(get_maternal_line(selected_line_name, filtered_df))
-    if lineage_mode in ['paternal', 'both']:
-        paternal_line = set(get_paternal_line(selected_line_name, filtered_df))
+    for line in subset_nodes:
+        num_parents = parent_count.get(line, 0)
+        if num_parents == 0:
+            founders.add(line)
+            if "POLY" in line.upper() or pattern_poly_p.match(line):
+                poly_founders.add(line)
+        elif num_parents == 1:
+            half_defined.add(line)
+        else:
+            fully_defined.add(line)
 
-    # Filter relationships to only those in the subset.
-    subset_relationships = []
-    for parent, child, role in relationships:
-        if (parent in subset_ancestors) and (child in subset_ancestors):
-            subset_relationships.append((parent, child, role))
+    # Set up the color mapping for kinship values
+    kin_vals = list(kinship_values.values())
+    norm = Normalize(vmin=min(kin_vals), vmax=max(kin_vals))
+    cmap = cm.get_cmap('Spectral')
 
-    # Color logic: 'none' => color by kinship gradient, else highlight lines.
-    if lineage_mode == 'none':
-        # color by kinship gradient
-        kin_vals = list(kinship_values.values())
-        norm = Normalize(vmin=min(kin_vals), vmax=max(kin_vals))
-        cmap = cm.get_cmap('Spectral')
+    def get_node_color(kval):
+        color = cmap(norm(kval))
+        return '#{:02x}{:02x}{:02x}'.format(
+            int(color[0]*255),
+            int(color[1]*255),
+            int(color[2]*255)
+        )
 
-        def get_node_color(kval):
-            color = cmap(norm(kval))
-            return '#{:02x}{:02x}{:02x}'.format(
-                int(color[0] * 255),
-                int(color[1] * 255),
-                int(color[2] * 255)
-            )
-    else:
-        # highlight maternal/paternal lines with pink/blue/yellow/white
-        def get_node_color(line_name):
-            if line_name in maternal_line and line_name in paternal_line:
-                return '#FFFF99'  # pale yellow for both lines
-            elif line_name in maternal_line:
-                return '#FFC0CB'  # pink for maternal
-            elif line_name in paternal_line:
-                return '#ADD8E6'  # light blue for paternal
-            elif line_name == selected_line_name:
-                return 'lightgreen'  # highlight main line as well
-            else:
-                return 'white'
+    # Here we compute the maternal and paternal lines for the selected node.
+    maternal_line = set(get_maternal_line(selected_line_name, filtered_df))
+    paternal_line = set(get_paternal_line(selected_line_name, filtered_df))
 
-    # Build graphviz digraph
     dot = graphviz.Digraph(comment='Family Tree')
     dot.attr('node', shape='ellipse', style='filled', fontsize='20')
 
-    for line in subset_ancestors:
+    # Draw nodes with potential highlighting
+    for line in subset_nodes:
         kv = kinship_values.get(line, 0.0)
         label = f"{line}\nKinship: {kv:.2f}"
+        node_color = get_node_color(kv)
 
-        if lineage_mode == 'none':
-            node_color = get_node_color(kv)
+        # Determine default node parameters
+        node_style = None  # leave default style
+        node_penwidth = "1"  # default pen width
+
+        # Adjust based on the radio button value (lineage_mode)
+        if lineage_mode == 'maternal' and line in maternal_line:
+            node_penwidth = "3"
+            node_style = "bold"
+        elif lineage_mode == 'paternal' and line in paternal_line:
+            node_penwidth = "3"
+            node_style = "bold"
+        elif lineage_mode == 'both' and (line in maternal_line or line in paternal_line):
+            node_penwidth = "3"
+            node_style = "bold"
+        # else: if lineage_mode is 'none', do nothing extra
+
+        # Incorporate additional styling based on your original classifications:
+        if line in poly_founders:
+            dot.node(line, label=label, fillcolor=node_color, fontcolor='black',
+                     color='black', style=node_style if node_style else "dashed", penwidth=node_penwidth if node_penwidth else "3")
+        elif line in founders:
+            dot.node(line, label=label, fillcolor=node_color, fontcolor='black',
+                     color='black', penwidth=node_penwidth if node_penwidth else "3")
+        elif line in half_defined:
+            dot.node(line, label=label, fillcolor=node_color, fontcolor='black',
+                     color='black', penwidth="2", style="dotted")
         else:
-            node_color = get_node_color(line)
+            dot.node(line, label=label, fillcolor=node_color, fontcolor='black', color='black')
 
-        dot.node(line, label=label, fillcolor=node_color, fontcolor='black', color='black')
-
+    # Draw edges as before
     for parent, child, role in subset_relationships:
-        if role == 'male':
-            edge_color = 'blue'
-        elif role == 'female':
-            edge_color = 'red'
-        else:
-            edge_color = 'black'
+        edge_color = 'blue' if role == 'male' else ('red' if role == 'female' else 'black')
         dot.edge(parent, child, color=edge_color)
 
-    # Convert to PNG image
+    pedigree_summary = f"""Pedigree Completeness:
+    Founders: {len(founders)}
+    Poly Crosses: {len(poly_founders)}
+    Half-Defined Genotypes: {len(half_defined)}
+    Fully Defined Genotypes: {len(fully_defined)}
+    """
+    dot.node(
+        "pedigree_summary",
+        label=pedigree_summary,
+        shape="box",
+        fontsize="30",
+        style="filled",
+        fillcolor="white",
+        fontcolor="black",
+        width="1",
+        height="1",
+    )
+    dot.edge("pedigree_summary", selected_line_name, style="invis")
+
+    # Generate and encode the image
     tree_buffer = BytesIO()
     tree_buffer.write(dot.pipe(format='png'))
     tree_buffer.seek(0)
@@ -1093,31 +1917,13 @@ def generate_family_tree(n_clicks, lineage_mode, selected_line_name, generation_
     return html.Img(src=tree_src, style=CUSTOM_CSS['image'])
 
 
-# ----------------------
-# line-name-dropdown CB
-# ----------------------
-@app.callback(
-    Output('line-name-dropdown', 'value'),
-    [Input('line-name-dropdown', 'value'),
-     Input('paste-line-names', 'value')]
-)
-def update_line_selection(selected_lines, pasted_lines):
-    """
-    Parses comma-separated input pasted into the input box and adds valid lines to the selection.
-    """
-    if pasted_lines:
-        pasted_list = [name.strip() for name in pasted_lines.split(',')]
-        all_lines = df['LineName'].unique()
-        valid_lines = [line for line in pasted_list if line in all_lines]
 
-        if selected_lines:
-            # Combine with existing selections without duplicates
-            valid_lines = list(set(selected_lines + valid_lines))
 
-        return valid_lines
+#endregion
 
-    return selected_lines
 
+
+#region Old find Ancestors, Descendants, Relatives
 
 @app.callback(
     Output('selected-line-names-list', 'children'),
@@ -1129,9 +1935,6 @@ def update_selected_line_names_list(selected_line_names):
     return [html.Li(name) for name in selected_line_names]
 
 
-# -------------------------
-# "Old" relative-finding methods (to gather lines) for the main matrix generation
-# -------------------------
 def old_find_ancestors(line_names, df, processed=None):
     if processed is None:
         processed = set()
@@ -1150,7 +1953,6 @@ def old_find_ancestors(line_names, df, processed=None):
 def old_find_descendants(line_names, df, processed=None):
     if processed is None:
         processed = set()
-    # Must use OR condition for either male/female parent matching
     progeny_df = df[df['MaleParent'].isin(line_names) | df['FemaleParent'].isin(line_names)]
     progeny = progeny_df['LineName'].tolist()
     new_progeny = [child for child in progeny if child not in processed]
@@ -1164,19 +1966,17 @@ def old_find_descendants(line_names, df, processed=None):
 
 
 def old_find_relatives(line_names, df):
-    # Finds all ancestors + all descendants for the specified line(s)
     ancestors = old_find_ancestors(line_names, df)
     descendants = old_find_descendants(line_names, df)
-    # Also gather ancestors of the descendants themselves (so we get a fuller set)
     descendant_ancestors = [old_find_ancestors([d], df) for d in descendants]
     flat_desc_ances = [item for sublist in descendant_ancestors for item in sublist]
     all_relatives = list(set(ancestors + descendants + flat_desc_ances))
     return all_relatives
 
 
-# -------------------------
-# Generating the A-matrix & Heatmap for MAIN PAGE
-# -------------------------
+#endregion
+
+
 @app.callback(
     [
         Output('heatmap-image', 'src'),
@@ -1185,57 +1985,44 @@ def old_find_relatives(line_names, df):
         Output('matrix-store', 'data')
     ],
     [Input('generate-amatrix-button', 'n_clicks')],
-    [State('line-name-dropdown', 'value')]
+    [State('line-name-dropdown', 'value'),
+     State('kinship-method-slider', 'value')]
 )
-def generate_amatrix_and_heatmap(n_clicks, selected_line_names):
-    global current_amatrix
-
+def generate_amatrix_and_heatmap(n_clicks, selected_line_names, method_choice):
     if n_clicks is None or not selected_line_names:
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
-    # Gather all relatives for selected lines.
     all_related_lines = old_find_relatives(selected_line_names, filtered_df)
-    # Filter the DataFrame to only those lines.
     relatives_df = filtered_df[filtered_df['LineName'].isin(all_related_lines)]
 
-    # Compute A-matrix (now done in a single pass with topological sort + numba).
-    current_amatrix = compute_amatrix_diploid_revised(relatives_df)
+    # Select method based on slider value
+    if method_choice == 0:
+        current_amatrix = compute_amatrix_diploid(relatives_df)  # Standard Henderson
+    elif method_choice == 1:
+        current_amatrix = compute_amatrix_polyploid(relatives_df)  # Modified Henderson for Polyploids
 
-    # Write full matrix to a temporary file.
-    temp_file_full = tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.csv')
-    current_amatrix.to_csv(temp_file_full)
-    temp_file_full.close()
 
-    # ---- NEW: skip or reduce clustering if the matrix is too large
+    file_name = f"full_matrix_{int(time.time())}.csv"
+    file_path = os.path.join(OUTPUT_DIR, file_name)
+    current_amatrix.to_csv(file_path)
+    safe_filename_full = urllib.parse.quote(file_path)
+    full_matrix_link = f'/download?filename={safe_filename_full}&type=full'
+
     n_lines = len(current_amatrix)
     if n_lines == 0:
-        # Edge case: no lines
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
     if n_lines <= MAX_CLUSTER_SIZE:
-        # Use clustermap
-        heatmap_plot = sns.clustermap(
-            current_amatrix,
-            method='average',
-            cmap='Spectral',
-            figsize=(15, 15),
-            row_cluster=True,
-            col_cluster=True
-        )
+        heatmap_plot = sns.clustermap(current_amatrix, method='average', cmap='Spectral', figsize=(15, 15))
         plt.close(heatmap_plot.fig)
-
         heatmap_buffer = BytesIO()
         heatmap_plot.savefig(heatmap_buffer, format='png')
         heatmap_buffer.seek(0)
         encoded_heatmap = base64.b64encode(heatmap_buffer.read()).decode('utf-8')
         heatmap_src = f'data:image/png;base64,{encoded_heatmap}'
-
     else:
-        # If too big, do a simpler heatmap (no hierarchical clustering).
         plt.figure(figsize=(15, 15))
         sns.heatmap(current_amatrix, cmap='Spectral')
-        # We can also add a note in the corner that clustering was skipped, etc.
-        plt.title(f"Heatmap (No Clustering) for {n_lines} lines > {MAX_CLUSTER_SIZE}")
         heatmap_buffer = BytesIO()
         plt.savefig(heatmap_buffer, format='png')
         heatmap_buffer.seek(0)
@@ -1243,20 +2030,11 @@ def generate_amatrix_and_heatmap(n_clicks, selected_line_names):
         encoded_heatmap = base64.b64encode(heatmap_buffer.read()).decode('utf-8')
         heatmap_src = f'data:image/png;base64,{encoded_heatmap}'
 
-    # Build link for full matrix download.
-    full_matrix_link = f'/download?filename={temp_file_full.name}&type=full'
     store_data = current_amatrix.to_dict()
-    return (
-        heatmap_src,
-        full_matrix_link,
-        temp_file_full.name,  # hidden store of the path
-        store_data
-    )
+    return heatmap_src, full_matrix_link, file_path, store_data
 
 
-# -------------------------
-# Generating the A-matrix & Heatmap for DUMMY PROGENY PAGE
-# -------------------------
+
 @app.callback(
     [
         Output('heatmap-image-dummy', 'src'),
@@ -1265,30 +2043,35 @@ def generate_amatrix_and_heatmap(n_clicks, selected_line_names):
         Output('matrix-store-dummy', 'data')
     ],
     [Input('generate-amatrix-button-dummy', 'n_clicks')],
-    [State('temp-progeny-list-main', 'children')]
+    [
+        State('temp-progeny-list-main', 'children'),
+        State('kinship-method-slider', 'value')  # <--- add slider state
+    ]
 )
-def generate_amatrix_and_heatmap_dummy(n_clicks, temp_progeny_list_children):
-    global current_amatrix, temp_progeny_list
+def generate_amatrix_and_heatmap_dummy(n_clicks, temp_progeny_list_children, method_choice):
     if n_clicks is None:
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
-    # Build a DF that includes filtered_df plus any dummy progeny rows.
     temp_df = filtered_df.copy()
     for dummy_progeny in temp_progeny_list:
         temp_df = pd.concat([temp_df, pd.DataFrame([dummy_progeny], columns=temp_df.columns)])
 
-    # Find relatives for all newly added dummy progenies.
     progeny_names = [p[0] for p in temp_progeny_list]
     all_related_lines = old_find_relatives(progeny_names, temp_df)
     relatives_df = temp_df[temp_df['LineName'].isin(all_related_lines)]
 
-    # Compute A-matrix (single-pass method with numba).
-    current_amatrix = compute_amatrix_diploid_revised(relatives_df)
+    # Switch based on the slider
+    if method_choice == 0:
+        current_amatrix = compute_amatrix_diploid(relatives_df)
+    elif method_choice == 1:
+        current_amatrix = compute_amatrix_polyploid(relatives_df)
 
-    # Temporary file for full matrix.
-    temp_file_full = tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.csv')
-    current_amatrix.to_csv(temp_file_full)
-    temp_file_full.close()
+
+    file_name = f"dummy_full_matrix_{int(time.time())}.csv"
+    file_path = os.path.join(OUTPUT_DIR, file_name)
+    current_amatrix.to_csv(file_path)
+    safe_filename_full = urllib.parse.quote(file_path)
+    full_matrix_link = f'/download?filename={safe_filename_full}&type=full'
 
     n_lines = len(current_amatrix)
     if n_lines == 0:
@@ -1304,7 +2087,6 @@ def generate_amatrix_and_heatmap_dummy(n_clicks, temp_progeny_list_children):
             col_cluster=True
         )
         plt.close(heatmap_plot.fig)
-
         heatmap_buffer = BytesIO()
         heatmap_plot.savefig(heatmap_buffer, format='png')
         heatmap_buffer.seek(0)
@@ -1321,14 +2103,10 @@ def generate_amatrix_and_heatmap_dummy(n_clicks, temp_progeny_list_children):
         encoded_heatmap = base64.b64encode(heatmap_buffer.read()).decode('utf-8')
         heatmap_src = f'data:image/png;base64,{encoded_heatmap}'
 
-    full_matrix_link = f'/download?filename={temp_file_full.name}&type=full'
     store_data = current_amatrix.to_dict()
-    return heatmap_src, full_matrix_link, temp_file_full.name, store_data
+    return heatmap_src, full_matrix_link, file_path, store_data
 
 
-# -------------------------
-# Subset Dropdown for MAIN PAGE & DUMMY PAGE
-# -------------------------
 @app.callback(
     Output('subset-dropdown', 'options'),
     [Input('generate-amatrix-button', 'n_clicks')],
@@ -1366,12 +2144,18 @@ def display_subset_matrix(subset_values, matrix_data):
     current_amatrix = pd.DataFrame(matrix_data)
     subset_amatrix = current_amatrix.loc[subset_values, subset_values]
 
-    table_header = [html.Thead(html.Tr([html.Th('')] + [html.Th(col) for col in subset_amatrix.columns]))]
-    table_body = [html.Tbody([
-        html.Tr([html.Td(subset_amatrix.index[i])] +
-                [html.Td(subset_amatrix.iloc[i, j]) for j in range(len(subset_amatrix.columns))])
-        for i in range(len(subset_amatrix))
-    ])]
+    table_header = [
+        html.Thead(
+            html.Tr([html.Th('')] + [html.Th(col) for col in subset_amatrix.columns])
+        )
+    ]
+    table_body = [
+        html.Tbody([
+            html.Tr([html.Td(subset_amatrix.index[i])] +
+                    [html.Td(subset_amatrix.iloc[i, j]) for j in range(len(subset_amatrix.columns))])
+            for i in range(len(subset_amatrix))
+        ])
+    ]
     return html.Table(table_header + table_body, className="table")
 
 
@@ -1386,32 +2170,252 @@ def display_subset_matrix_dummy(subset_values, matrix_data):
     current_amatrix = pd.DataFrame(matrix_data)
     subset_amatrix = current_amatrix.loc[subset_values, subset_values]
 
-    table_header = [html.Thead(html.Tr([html.Th('')] + [html.Th(col) for col in subset_amatrix.columns]))]
-    table_body = [html.Tbody([
-        html.Tr([html.Td(subset_amatrix.index[i])] +
-                [html.Td(subset_amatrix.iloc[i, j]) for j in range(len(subset_amatrix.columns))])
-        for i in range(len(subset_amatrix))
-    ])]
+    table_header = [
+        html.Thead(
+            html.Tr([html.Th('')] + [html.Th(col) for col in subset_amatrix.columns])
+        )
+    ]
+    table_body = [
+        html.Tbody([
+            html.Tr([html.Td(subset_amatrix.index[i])] +
+                    [html.Td(subset_amatrix.iloc[i, j]) for j in range(len(subset_amatrix.columns))])
+            for i in range(len(subset_amatrix))
+        ])
+    ]
     return html.Table(table_header + table_body, className="table")
 
 
-# -------------------------
-# Download Endpoints
-# -------------------------
 @app.server.route('/download')
 def download_file():
-    """Handles file download requests from the generated CSV tempfiles."""
-    filename = flask.request.args.get('filename')
+    """Handles file download requests from the generated CSV output files."""
+    filename_quoted = flask.request.args.get('filename')
     matrix_type = flask.request.args.get('type', 'full')
-    if filename:
-        return send_file(
-            filename,
-            mimetype="text/csv",
-            as_attachment=True,
-            attachment_filename=f'{matrix_type}_matrix.csv'
-        )
-    else:
+    if not filename_quoted:
         return "File not found", 404
+    filename = urllib.parse.unquote(filename_quoted)
+    return send_file(
+        filename,
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=f'{matrix_type}_matrix.csv'
+    )
+
+
+
+#region Logic for adding entries even though they still dont persist... need to use dcc.store i think...
+
+@app.callback(
+    Output('add-ped-missing-parents-table', 'children'),
+    Input('add-ped-missing-rows-store', 'data')
+)
+def show_missing_parents_table(invalid_rows):
+    """
+    Displays an editable table of invalid rows (with missing or unknown parents),
+    and shows the "original" parent name if it wasn't recognized in the dataset.
+    """
+    # Always create a Save Corrections button so its ID is in the layout
+    save_button = html.Button(
+        "Save Corrections",
+        id="add-ped-save-corrections-btn",
+        style=CUSTOM_CSS['button']
+    )
+
+    if not invalid_rows:
+        return html.Div([
+            "No invalid rows. All good!",
+            html.Br(),
+            html.Div(save_button, style={'display': 'none'})  # Hide or disable if you want
+        ])
+
+    existing_lines = df['LineName'].unique().tolist()
+
+    rows_html = []
+    for i, row_dict in enumerate(invalid_rows):
+        row_ln = row_dict.get('LineName','')
+        row_mp = row_dict.get('MaleParent','')
+        row_fp = row_dict.get('FemaleParent','')
+
+        male_in_dataset = row_mp in existing_lines if row_mp else True
+        female_in_dataset = row_fp in existing_lines if row_fp else True
+
+        # Our normal dropdown for male parent
+        male_dd = dcc.Dropdown(
+            id={'type': 'missing-parent-male', 'index': i},
+            options=[{'label': x, 'value': x} for x in existing_lines],
+            value=row_mp if male_in_dataset else None,
+            placeholder='Select/Correct Male Parent',
+            style={'width': '200px'},
+        )
+
+        # We'll build the cell contents for the male parent
+        # so we can append a "Invalid: original_name" if it’s not recognized
+        male_cell_contents = [male_dd]
+        if not male_in_dataset and row_mp:
+            male_cell_contents.append(
+                html.Span(
+                    f" (Invalid: {row_mp})",
+                    style={'color': 'red', 'marginLeft': '8px'}
+                )
+            )
+
+        # Our normal dropdown for female parent
+        female_dd = dcc.Dropdown(
+            id={'type': 'missing-parent-female', 'index': i},
+            options=[{'label': x, 'value': x} for x in existing_lines],
+            value=row_fp if female_in_dataset else None,
+            placeholder='Select/Correct Female Parent',
+            style={'width': '200px'},
+        )
+
+        # Similarly, note the invalid female name if needed
+        female_cell_contents = [female_dd]
+        if not female_in_dataset and row_fp:
+            female_cell_contents.append(
+                html.Span(
+                    f" (Invalid: {row_fp})",
+                    style={'color': 'red', 'marginLeft': '8px'}
+                )
+            )
+
+        row_div = html.Tr([
+            html.Td(row_ln),
+            html.Td(male_cell_contents),
+            html.Td(female_cell_contents)
+        ])
+        rows_html.append(row_div)
+
+    table = html.Table([
+        html.Thead(html.Tr([
+            html.Th("LineName"),
+            html.Th("MaleParent"),
+            html.Th("FemaleParent")
+        ])),
+        html.Tbody(rows_html)
+    ])
+
+    return html.Div([
+        table,
+        html.Br(),
+        save_button
+    ])
+
+
+
+
+def combine_pedigree_with_new_rows(main_df, new_rows):
+    # Convert new_rows (list of dicts) to a DataFrame
+    if not new_rows:
+        return main_df
+    new_rows_df = pd.DataFrame(new_rows)
+    # Concatenate
+    combined_df = pd.concat([main_df, new_rows_df], ignore_index=True)
+    return combined_df
+
+
+
+
+@app.callback(
+    [
+        Output('add-ped-missing-rows-store', 'data'),
+        Output('add-ped-rows-store', 'data'),
+        Output('add-ped-upload-status', 'children'),
+        Output('data-store', 'data', allow_duplicate=True)  # New output to update the main dataset store
+    ],
+    [
+        Input('add-ped-upload', 'contents'),
+        Input('add-ped-save-corrections-btn', 'n_clicks'),
+    ],
+    [
+        State('add-ped-upload', 'filename'),
+        State({'type': 'missing-parent-male', 'index': ALL}, 'value'),
+        State({'type': 'missing-parent-female', 'index': ALL}, 'value'),
+        State('add-ped-missing-rows-store', 'data'),
+        State('add-ped-rows-store', 'data'),
+    ],
+    prevent_initial_call=True
+)
+def handle_upload_and_save_corrections(upload_contents, save_clicks,
+                                       filename,
+                                       male_values, female_values,
+                                       invalid_rows, valid_rows):
+    global df  # we continue to use df as our working global dataset
+
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        raise PreventUpdate
+
+    triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
+
+    # Branch for file upload
+    if triggered_id == 'add-ped-upload':
+        if not upload_contents:
+            raise PreventUpdate
+
+        content_type, content_string = upload_contents.split(',')
+        decoded = base64.b64decode(content_string)
+
+        if not filename.lower().endswith('.txt'):
+            return dash.no_update, dash.no_update, "Please upload a .txt file (tab-delimited).", dash.no_update
+
+        try:
+            new_df = pd.read_csv(BytesIO(decoded), sep='\t', encoding='latin-1')
+        except Exception as e:
+            return dash.no_update, dash.no_update, f"Error reading file: {e}", dash.no_update
+
+        required_cols = {'LineName', 'FemaleParent', 'MaleParent'}
+        if not required_cols.issubset(new_df.columns):
+            msg = "File must have columns: LineName, FemaleParent, MaleParent"
+            return dash.no_update, dash.no_update, msg, dash.no_update
+
+        # Use current df to validate; you may choose to use the store instead
+        existing_lines = set(df['LineName'].unique())
+        found_invalid_rows = []
+        found_valid_rows = []
+        for _, row in new_df.iterrows():
+            ln = str(row['LineName']).strip()
+            mp = str(row['MaleParent']).strip() if pd.notna(row['MaleParent']) else ''
+            fp = str(row['FemaleParent']).strip() if pd.notna(row['FemaleParent']) else ''
+            if ln == '':
+                continue
+            male_ok = (mp == '') or (mp in existing_lines)
+            female_ok = (fp == '') or (fp in existing_lines)
+            if male_ok and female_ok:
+                found_valid_rows.append(row.to_dict())
+            else:
+                found_invalid_rows.append(row.to_dict())
+
+        msg = f"Uploaded {filename}. Valid: {len(found_valid_rows)}; Invalid: {len(found_invalid_rows)}."
+        # In this branch we are not yet updating the main dataset.
+        return (found_invalid_rows, found_valid_rows, msg, dash.no_update)
+
+    # Branch for saving corrections
+    elif triggered_id == 'add-ped-save-corrections-btn':
+        if not invalid_rows:
+            return dash.no_update, dash.no_update, "No invalid rows to correct.", dash.no_update
+
+        # Apply corrections from the dropdown inputs
+        for i, row_dict in enumerate(invalid_rows):
+            corrected_male = male_values[i] or ''
+            corrected_female = female_values[i] or ''
+            row_dict['MaleParent'] = corrected_male
+            row_dict['FemaleParent'] = corrected_female
+
+        updated_valid_rows = valid_rows + invalid_rows
+
+        # Create a DataFrame from the new entries and update the global dataset
+        new_entries_df = pd.DataFrame(updated_valid_rows)
+        df = pd.concat([df, new_entries_df], ignore_index=True)
+
+        # Update the dcc.Store by converting the updated DataFrame to a dict of records
+        updated_store = df.to_dict('records')
+        return ([], updated_valid_rows, "Corrections saved successfully!", updated_store)
+
+    else:
+        raise PreventUpdate
+
+
+#endregion
+
 
 
 @app.callback(
@@ -1422,11 +2426,11 @@ def update_subset_matrix_download_link(subset_values):
     if not subset_values or current_amatrix is None:
         return dash.no_update
     subset_amatrix = current_amatrix.loc[subset_values, subset_values]
-    temp_file_subset = tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.csv')
-    subset_amatrix.to_csv(temp_file_subset)
-    temp_file_subset.close()
-
-    return f'/download?filename={temp_file_subset.name}&type=subset'
+    file_name = f"subset_matrix_{int(time.time())}.csv"
+    file_path = os.path.join(OUTPUT_DIR, file_name)
+    subset_amatrix.to_csv(file_path)
+    safe_filename_subset = urllib.parse.quote(file_path)
+    return f'/download?filename={safe_filename_subset}&type=subset'
 
 
 @app.callback(
@@ -1437,16 +2441,13 @@ def update_subset_matrix_download_link_dummy(subset_values):
     if not subset_values or current_amatrix is None:
         return dash.no_update
     subset_amatrix = current_amatrix.loc[subset_values, subset_values]
-    temp_file_subset = tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.csv')
-    subset_amatrix.to_csv(temp_file_subset)
-    temp_file_subset.close()
+    file_name = f"dummy_subset_matrix_{int(time.time())}.csv"
+    file_path = os.path.join(OUTPUT_DIR, file_name)
+    subset_amatrix.to_csv(file_path)
+    safe_filename_subset = urllib.parse.quote(file_path)
+    return f'/download?filename={safe_filename_subset}&type=subset'
 
-    return f'/download?filename={temp_file_subset.name}&type=subset'
 
-
-# -------------------------
-# Progeny Finder Callbacks
-# -------------------------
 @app.callback(
     Output('selected-progeny-modules', 'children'),
     [Input('progeny-module-dropdown', 'value')]
@@ -1457,7 +2458,7 @@ def display_selected_progeny_modules(selected_functions):
         return []
 
     modules = []
-    # specific-pairing
+
     if 'specific-pairing' in selected_functions:
         modules.append(html.Div([
             html.H4("Lookup Progeny of Specific Pairing"),
@@ -1475,12 +2476,15 @@ def display_selected_progeny_modules(selected_functions):
                 placeholder="Select Second Line Name",
                 style=CUSTOM_CSS['dropdown']
             ),
-            html.Button("Find Progeny", id="find-progeny-button",
-                        className="btn btn-success", style=CUSTOM_CSS['button']),
+            html.Button(
+                "Find Progeny",
+                id="find-progeny-button",
+                className="btn btn-success",
+                style=CUSTOM_CSS['button']
+            ),
             html.Div(id='progeny-results')
         ]))
 
-    # single-parent
     if 'single-parent' in selected_functions:
         modules.append(html.Div([
             html.H4("Lookup Progeny of Single Parent"),
@@ -1491,12 +2495,15 @@ def display_selected_progeny_modules(selected_functions):
                 placeholder="Select a Parent",
                 style=CUSTOM_CSS['dropdown']
             ),
-            html.Button("Find Progeny", id="find-single-parent-progeny-button",
-                        className="btn btn-info", style=CUSTOM_CSS['button']),
+            html.Button(
+                "Find Progeny",
+                id="find-single-parent-progeny-button",
+                className="btn btn-info",
+                style=CUSTOM_CSS['button']
+            ),
             html.Div(id='single-parent-progeny-results')
         ]))
 
-    # family-tree
     if 'family-tree' in selected_functions:
         modules.append(html.Div([
             html.H4("Generate Family Tree"),
@@ -1527,12 +2534,15 @@ def display_selected_progeny_modules(selected_functions):
                 value='none',
                 labelStyle={'display': 'block', 'marginTop': '5px'}
             ),
-            html.Button("Generate Family Tree", id="generate-family-tree-button",
-                        className="btn btn-warning", style=CUSTOM_CSS['button']),
+            html.Button(
+                "Generate Family Tree",
+                id="generate-family-tree-button",
+                className="btn btn-warning",
+                style=CUSTOM_CSS['button']
+            ),
             html.Div(id='family-tree-image')
         ]))
 
-    # descendant-tree
     if 'descendant-tree' in selected_functions:
         modules.append(html.Div([
             html.H4("Generate Descendant Tree"),
@@ -1543,12 +2553,15 @@ def display_selected_progeny_modules(selected_functions):
                 placeholder="Select a Line",
                 style=CUSTOM_CSS['dropdown']
             ),
-            html.Button("Generate Descendant Tree", id="generate-descendant-tree-button",
-                        className="btn btn-warning", style=CUSTOM_CSS['button']),
+            html.Button(
+                "Generate Descendant Tree",
+                id="generate-descendant-tree-button",
+                className="btn btn-warning",
+                style=CUSTOM_CSS['button']
+            ),
             html.Div(id='descendant-tree-image')
         ]))
 
-    # combined-family-tree
     if 'combined-family-tree' in selected_functions:
         modules.append(html.Div([
             html.H4("Generate Combined Family Tree for Two Lines"),
@@ -1566,13 +2579,15 @@ def display_selected_progeny_modules(selected_functions):
                 placeholder="Select Second Line",
                 style=CUSTOM_CSS['dropdown']
             ),
-            html.Button("Generate Combined Family Tree",
-                        id="generate-combined-family-tree-button",
-                        className="btn btn-primary", style=CUSTOM_CSS['button']),
+            html.Button(
+                "Generate Combined Family Tree",
+                id="generate-combined-family-tree-button",
+                className="btn btn-primary",
+                style=CUSTOM_CSS['button']
+            ),
             html.Div(id='combined-family-tree-image')
         ]))
 
-    # temp-progeny-tree
     if 'temp-progeny-tree' in selected_functions:
         modules.append(html.Div([
             html.H4("Generate Family Tree with Temporary Progeny"),
@@ -1590,9 +2605,12 @@ def display_selected_progeny_modules(selected_functions):
                 placeholder="Select Male Parent",
                 style=CUSTOM_CSS['dropdown']
             ),
-            html.Button("Generate Family Tree with Temporary Progeny",
-                        id="generate-temp-progeny-tree-button",
-                        className="btn btn-warning", style=CUSTOM_CSS['button']),
+            html.Button(
+                "Generate Family Tree with Temporary Progeny",
+                id="generate-temp-progeny-tree-button",
+                className="btn btn-warning",
+                style=CUSTOM_CSS['button']
+            ),
             html.Div(id='temp-progeny-tree-image')
         ]))
 
@@ -1670,30 +2688,21 @@ def generate_combined_family_tree(n_clicks, line1, line2):
     all_lines = ancestors1.union(ancestors2, {line1, line2})
     all_relationships = relationships1 + relationships2
 
-    # Merge generations (not strictly necessary for drawing, but might help if you add depth).
     generations = defaultdict(list)
-    if generations1:
-        max_g1 = max(generations1.keys())
-    else:
-        max_g1 = 0
-    if generations2:
-        max_g2 = max(generations2.keys())
-    else:
-        max_g2 = 0
+    max_g1 = max(generations1.keys()) if generations1 else 0
+    max_g2 = max(generations2.keys()) if generations2 else 0
     for g in range(max(max_g1, max_g2) + 1):
         generations[g].extend(generations1.get(g, []) + generations2.get(g, []))
 
-    # Determine color for ancestors unique to line1 vs line2 vs shared.
     line_colors = {}
     for a in ancestors1:
-        line_colors[a] = '#ADD8E6'  # Light blue for line1 ancestors.
+        line_colors[a] = '#ADD8E6'
     for a in ancestors2:
         if a in line_colors:
-            line_colors[a] = '#FFFFE0'  # Light yellow if shared
+            line_colors[a] = '#FFFFE0'  # yellow if in both
         else:
-            line_colors[a] = '#FFB6C1'  # Light pink for line2 ancestors.
+            line_colors[a] = '#FFB6C1'
 
-    # The lines themselves green.
     line_colors[line1] = 'green'
     line_colors[line2] = 'green'
 
@@ -1710,17 +2719,20 @@ def generate_combined_family_tree(n_clicks, line1, line2):
     added_edges = set()
     for parent, child, role in all_relationships:
         if (parent, child) not in added_edges:
-            # Color the edge based on which side it belongs to.
-            if child in ancestors1 or child == line1:
+            parent_color = line_colors.get(parent, 'lightgrey')
+            child_color = line_colors.get(child, 'lightgrey')
+            # if both nodes are yellow, make the edge black
+            if parent_color == '#FFFFE0' and child_color == '#FFFFE0':
+                color = 'black'
+            elif child in ancestors1 or child == line1:
                 color = '#ADD8E6'
             elif child in ancestors2 or child == line2:
                 color = '#FFB6C1'
             else:
-                color = 'black'
+                color = '#a4a4a4'
             dot.edge(parent, child, color=color)
             added_edges.add((parent, child))
 
-    # Convert to PNG
     tree_buffer = BytesIO()
     tree_buffer.write(dot.pipe(format='png'))
     tree_buffer.seek(0)
@@ -1742,17 +2754,16 @@ def generate_temp_progeny_tree(n_clicks, female_parent, male_parent):
 
     temp_progeny_name = "Temp_Progeny"
     temp_df = filtered_df.copy()
-    temp_df = pd.concat([temp_df, pd.DataFrame([[temp_progeny_name, female_parent, male_parent]],
-                                               columns=temp_df.columns)])
+    temp_df = pd.concat(
+        [temp_df, pd.DataFrame([[temp_progeny_name, female_parent, male_parent]],
+         columns=temp_df.columns)]
+    )
 
-    # Get ancestors for the newly added line.
     all_ancestors, relationships, generations = find_ancestors(temp_progeny_name, temp_df)
     all_lines = all_ancestors.union({temp_progeny_name})
     relatives_df = temp_df[temp_df['LineName'].isin(all_lines)]
+    kinship_matrix = compute_amatrix_diploid(relatives_df)
 
-    kinship_matrix = compute_amatrix_diploid_revised(relatives_df)
-
-    # Determine color by kinship to the new line.
     if temp_progeny_name in kinship_matrix.index:
         kinship_values = kinship_matrix.loc[temp_progeny_name, all_lines].drop(temp_progeny_name)
         if not kinship_values.empty:
@@ -1764,25 +2775,26 @@ def generate_temp_progeny_tree(n_clicks, female_parent, male_parent):
 
     def get_color(value):
         if value <= quantiles[0.25]:
-            return '#ADD8E6'  # Light blue
+            return '#ADD8E6'
         elif value <= quantiles[0.5]:
-            return '#FFB6C1'  # Light pink
+            return '#FFB6C1'
         else:
-            return '#FFFFE0'  # Light yellow
+            return '#FFFFE0'
 
     dot = graphviz.Digraph(comment='Family Tree with Temporary Progeny')
     dot.attr('node', shape='ellipse', style='filled', fontsize='20')
 
     for _, row in relatives_df.iterrows():
         line_name = row['LineName']
-        if line_name in kinship_matrix.index and temp_progeny_name in kinship_matrix.index:
+        if (line_name in kinship_matrix.index and
+                temp_progeny_name in kinship_matrix.index):
             kv = kinship_matrix.loc[temp_progeny_name, line_name]
         else:
             kv = 0.0
         label = f"{line_name}\nKinship: {kv:.2f}"
 
         if line_name == temp_progeny_name:
-            color = 'orange'  # highlight the temp progeny
+            color = 'orange'
         else:
             color = get_color(kv)
 
@@ -1823,12 +2835,10 @@ def update_temp_progeny_list(add_clicks, reset_clicks, progeny_name, female_pare
         return []
 
     button_id = ctx.triggered[0]['prop_id'].split('.')[0]
-
     if button_id == 'reset-temp-progeny-main-button':
         temp_progeny_list = []
         temp_progeny_count = 0
         return []
-
     if button_id == 'add-temp-progeny-main-button':
         if progeny_name and female_parent and male_parent:
             temp_progeny_list.append((progeny_name, female_parent, male_parent))
@@ -1841,9 +2851,6 @@ def update_temp_progeny_list(add_clicks, reset_clicks, progeny_name, female_pare
     return html.Ul(list_items)
 
 
-# -------------------------
-# Upload Page Callback
-# -------------------------
 @app.callback(Output('upload-status', 'children'),
               [Input('upload-data', 'contents')],
               [State('upload-data', 'filename'),
@@ -1876,8 +2883,5 @@ def upload_file(contents, filename, last_modified):
         return "There was an error processing the file"
 
 
-# -------------------------
-# Main App Run
-# -------------------------
 if __name__ == '__main__':
-    app.run_server(debug=True)
+    app.run_server(debug=False)
