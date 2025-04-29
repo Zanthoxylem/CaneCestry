@@ -24,7 +24,7 @@ Canecestry_Pedigrees/
 
 ---
 
-## 2  Friction‑free launch (with Docker Compose – **recommended**)
+## 2  Docker Compose – **recommended**
 
 > **Prerequisite :** Docker Desktop ≥ 4 (Engine ≥ 20.10) on Windows / macOS or Docker Engine on Linux.
 
@@ -65,6 +65,9 @@ python flask_app.py --host 0.0.0.0 --port 8050
 ```
 
 Browse to **<http://127.0.0.1:8050>**.
+
+
+***CaneCestry is also avaiable online at https://canecestry-zanthoxylum2117.pythonanywhere.com/***
 
 ---
 
