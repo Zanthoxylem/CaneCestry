@@ -55,7 +55,7 @@ server = Flask(__name__)
 # =============================================================================
 # 1. Store Built-In (Default) Sugarcane Data and Create a Copy for df
 # =============================================================================
-default_df = pd.read_csv('/home/Zanthoxylum2117/Canecestry/Pedigree_25.txt', sep="\t")
+default_df = pd.read_csv('/Canecestry/Pedigree_Subset.txt', sep="\t")
 df = default_df.copy()
 
 # Create filtered_df from df

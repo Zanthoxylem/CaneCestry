@@ -1,2 +1,4 @@
 # Canecestry
- Canecestry: A toolbox for efficient pedigree visualization and innumeration.
+ Canecestry: A toolbox for efficient pedigree Analysis and Visualization.
+
+ 
