@@ -1,0 +1,12 @@
+# ─── docker-compose.yml ───
+version: "3.9"
+
+services:
+  canecestry:
+    build: .
+    ports:
+      - "8050:8050"          # hostPort:containerPort
+    volumes:
+      - .:/app               # map repo → /app (live-reload)
+    # optional: keep container name tidy
+    container_name: canecestry_dev
