@@ -2951,4 +2951,6 @@ def upload_file(contents, filename, last_modified):
 
 
 if __name__ == '__main__':
-    app.run(debug=False)
+    # listen on every interface inside the container
+    app.run_server(host='0.0.0.0', port=8050, debug=False)
+
