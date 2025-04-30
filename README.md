@@ -5,7 +5,7 @@
 ---
 
 ## Repository URL
-<https://github.com/Zanthoxylem/Canecestry_Pedigrees>
+<https://github.com/Zanthoxylem/CaneCestry>
 
 ---
 
@@ -30,8 +30,8 @@ Canecestry_Pedigrees/
 
 ```bash
 # clone the repository
-git clone https://github.com/Zanthoxylem/Canecestry_Pedigrees.git
-cd Canecestry_Pedigrees
+git clone https://github.com/Zanthoxylem/CaneCestry.git
+cd CaneCestry
 
 # build the image and start the container (first run ≈ 4‑5 min)
 docker compose up --build
@@ -53,8 +53,8 @@ The **`docker-compose.yml`** mounts the current working directory into the conta
 Use this path only if Docker cannot be used.
 
 ```bash
-git clone https://github.com/Zanthoxylem/Canecestry_Pedigrees.git
-cd Canecestry_Pedigrees
+git clone https://github.com/Zanthoxylem/CaneCestry.git
+cd CaneCestry
 
 python -m venv .venv
 source .venv/bin/activate        # Windows → .venv\Scripts\activate
