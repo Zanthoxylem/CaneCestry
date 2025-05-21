@@ -4,8 +4,8 @@
 
 ---
 
-## Repository URL
-<https://github.com/Zanthoxylem/CaneCestry>
+## Preprint now available!
+<https://doi.org/10.1101/2025.05.02.651868>
 
 ---
 
