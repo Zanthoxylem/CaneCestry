@@ -99,7 +99,7 @@ Users can replace or augment this file with proprietary pedigrees; no code chang
 
 Users may incorporate CaneCestry into closed‑source pipelines provided the original copyright notice is retained.
 
-## 7 Contavt Info
+## 7 Contact Info
 Email: Ztaylor@agcenter.lsu.edu
 
 
