@@ -55,9 +55,14 @@ server = Flask(__name__)
 # =============================================================================
 # 1. Store Built-In (Default) Sugarcane Data and Create a Copy for df
 # =============================================================================
-BASE_DIR = Path(__file__).resolve().parent        # directory that contains this .py file
-default_df = pd.read_csv(BASE_DIR / "Pedigree_Subset.txt", sep="\t")
-df = default_df.copy()
+BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_FILE = BASE_DIR / "pedigree" / "Pedigree_Subset.txt"
+USER_FILE = BASE_DIR / "pedigree" / "user_data" / "pedigree.txt"
+
+# Try to load user-supplied file if it exists, otherwise fallback
+PEDIGREE_PATH = USER_FILE if USER_FILE.exists() else DEFAULT_FILE
+
+df = pd.read_csv(PEDIGREE_PATH, sep="\t")
 
 # Create filtered_df from df
 parents_set = set(df['MaleParent'].tolist() + df['FemaleParent'].tolist())
