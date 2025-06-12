@@ -8,5 +8,5 @@ services:
       - "8050:8050"          # hostPort:containerPort
     volumes:
       - .:/app               # map repo → /app (live-reload)
-    # optional: keep container name tidy
+      - ./pedigree/user_data:/app/pedigree/user_data  # allow user to edit this folder
     container_name: canecestry_dev
