@@ -59,7 +59,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_FILE = BASE_DIR / "pedigree" / "Pedigree_Subset.txt"
 USER_FILE = BASE_DIR / "pedigree" / "user_data" / "pedigree.txt"
 
-# Try to load user-supplied file if it exists, otherwise fallback
+default_df = pd.read_csv(DEFAULT_FILE, sep="\t")
 PEDIGREE_PATH = USER_FILE if USER_FILE.exists() else DEFAULT_FILE
 
 df = pd.read_csv(PEDIGREE_PATH, sep="\t")
