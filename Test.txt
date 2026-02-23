@@ -652,7 +652,15 @@ def main_page_layout():
                 style={'margin-top': '10px'}
             )
         ),
-
+        # Timer + ETA display
+        dbc.Row(
+            dbc.Col(
+                html.Div(
+                    id="matrix-timer-display",
+                    style={'fontSize': '20px', 'marginTop': '10px', 'fontWeight': 'bold'}
+                )
+            )
+        ),
         # Row #6: Buttons (Generate, Download, etc.)
         dbc.Row([
             dbc.Col(
@@ -689,15 +697,6 @@ def main_page_layout():
         ], style={'margin-top': '20px'}, className="mb-4"),
 
 
-        # Timer + ETA display
-        dbc.Row(
-            dbc.Col(
-                html.Div(
-                    id="matrix-timer-display",
-                    style={'fontSize': '20px', 'marginTop': '10px', 'fontWeight': 'bold'}
-                )
-            )
-        ),
 
         # Interval + Store for timer
         dcc.Interval(
@@ -1321,7 +1320,25 @@ def make_df_from_store(n_clicks, store_data):
     return ""
 
 
+@app.callback(
+    Output('download-subset-link', 'href'),
+    Input('subset-dropdown', 'value'),
+    State('matrix-store', 'data')
+)
+def make_subset(selected_lines, matrix_info):
+    if not selected_lines or not matrix_info:
+        raise PreventUpdate
 
+    file_path = matrix_info["path"]
+    full_matrix = pd.read_csv(file_path, index_col=0)
+
+    subset = full_matrix.loc[selected_lines, selected_lines]
+
+    subset_file = file_path.replace("full_matrix", "subset_matrix")
+    subset.to_csv(subset_file)
+
+    safe = urllib.parse.quote(subset_file)
+    return f"/download?filename={safe}&type=subset"
 
 
 #endregion
@@ -1734,7 +1751,7 @@ def generate_family_tree(n_clicks, lineage_mode, selected_line_name, generation_
     paternal_line = set(get_paternal_line(selected_line_name, filtered_df))
 
     dot = graphviz.Digraph(comment='Family Tree')
-    dot.attr('node', shape='ellipse', style='filled', fontsize='20')
+    dot.attr('node', shape='ellipse', style='filled', fontsize='30', fontname = "Helvetica")
 
     # Draw nodes with potential highlighting
     for line in subset_nodes:
@@ -1795,12 +1812,19 @@ def generate_family_tree(n_clicks, lineage_mode, selected_line_name, generation_
     )
     dot.edge("pedigree_summary", selected_line_name, style="invis")
 
-    # Generate and encode the image
+    # Increase DPI for crisp lines and text
+    dot.attr(dpi='300')
+
+    # Generate high-resolution PNG
+    png_bytes = dot.pipe(format='png')
+
     tree_buffer = BytesIO()
-    tree_buffer.write(dot.pipe(format='png'))
+    tree_buffer.write(png_bytes)
     tree_buffer.seek(0)
+
     encoded_tree = base64.b64encode(tree_buffer.read()).decode('utf-8')
     tree_src = f'data:image/png;base64,{encoded_tree}'
+
     return html.Img(src=tree_src, style=CUSTOM_CSS['image'])
 
 
@@ -2066,27 +2090,7 @@ def old_find_relatives(selected_lines, df):
     return relatives
 
 
-@app.callback(
-    [
-        Output("matrix-timer-store", "data"),
-        Output("matrix-timer-interval", "disabled", allow_duplicate=True)
-    ],
-    Input("generate-amatrix-button", "n_clicks"),
-    State("data-store", "data"),
-    prevent_initial_call=True
-)
-def start_matrix_timer(n_clicks, data):
-    if not n_clicks:
-        raise PreventUpdate
 
-    n = len(data)
-    estimated_seconds = 0.000002 * (n * n)
-
-    return {
-        "start_time": time.time(),
-        "estimated_seconds": estimated_seconds,
-        "running": True
-    }, False   # ENABLE interval
 
 @app.callback(
     Output("matrix-timer-display", "children"),
@@ -2107,25 +2111,29 @@ def update_matrix_timer(n, timer_data):
         Output('heatmap-image', 'src'),
         Output('download-full-link', 'href'),
         Output('full-matrix-csv-path', 'children'),
-        Output('matrix-store', 'data'),
-        Output('matrix-timer-interval', 'disabled', allow_duplicate=True)
+        Output('matrix-store', 'data')
     ],
-    [Input('generate-amatrix-button', 'n_clicks')],
+    Input('generate-amatrix-button', 'n_clicks'),
     [
         State('line-name-dropdown', 'value'),
         State('kinship-method-slider', 'value'),
-        State('descendant-toggle', 'value'),
-        State('matrix-timer-store', 'data'),
+        State('descendant-toggle', 'value')
     ],
     prevent_initial_call=True
-
 )
-def generate_amatrix_and_heatmap(n_clicks, selected_line_names, method_choice, toggle_value, timer_data):
-    if n_clicks is None or not selected_line_names:
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+def generate_amatrix_and_heatmap(n_clicks, selected_line_names, method_choice, toggle_value):
+
+    if not n_clicks or not selected_line_names:
+        raise PreventUpdate
 
     # ---------------------------------------------------------
-    # Branch logic based on toggle
+    # START TIMER (console only)
+    # ---------------------------------------------------------
+    start_time = time.time()
+    print("\n[Matrix Timer] Starting computation...")
+
+    # ---------------------------------------------------------
+    # COLLECT LINES
     # ---------------------------------------------------------
     if toggle_value == "with":
         all_related_lines = old_find_relatives(selected_line_names, filtered_df)
@@ -2135,27 +2143,28 @@ def generate_amatrix_and_heatmap(n_clicks, selected_line_names, method_choice, t
     relatives_df = filtered_df[filtered_df['LineName'].isin(all_related_lines)]
 
     # ---------------------------------------------------------
-    # Matrix computation
+    # MATRIX COMPUTATION
     # ---------------------------------------------------------
     if method_choice == 0:
         current_amatrix = compute_amatrix_diploid(relatives_df)
     else:
         current_amatrix = compute_amatrix_polyploid(relatives_df)
 
-    file_name = f"full_matrix_{int(time.time())}.csv"
-    file_path = os.path.join(OUTPUT_DIR, file_name)
-    current_amatrix.to_csv(file_path)
-    safe_filename_full = urllib.parse.quote(file_path)
-    full_matrix_link = f'/download?filename={safe_filename_full}&type=full'
+    # Save full matrix to disk
+    matrix_file = os.path.join(OUTPUT_DIR, f"full_matrix_{int(time.time())}.csv")
+    current_amatrix.to_csv(matrix_file)
 
+    safe_matrix = urllib.parse.quote(matrix_file)
+    full_matrix_link = f"/download?filename={safe_matrix}&type=full"
+
+    # ---------------------------------------------------------
+    # HEATMAP GENERATION (saved to disk, not base64)
+    # ---------------------------------------------------------
     n_lines = len(current_amatrix)
-    if n_lines == 0:
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    heatmap_file = os.path.join(OUTPUT_DIR, f"heatmap_{int(time.time())}.png")
 
-    # ---------------------------------------------------------
-    # Heatmap generation
-    # ---------------------------------------------------------
     if n_lines <= 300:
+        # clustered heatmap
         heatmap_plot = sns.clustermap(
             current_amatrix,
             method='average',
@@ -2163,40 +2172,32 @@ def generate_amatrix_and_heatmap(n_clicks, selected_line_names, method_choice, t
             figsize=(15, 15)
         )
         plt.close(heatmap_plot.fig)
-        heatmap_buffer = BytesIO()
-        heatmap_plot.savefig(heatmap_buffer, format='png')
-        heatmap_buffer.seek(0)
-        encoded_heatmap = base64.b64encode(heatmap_buffer.read()).decode('utf-8')
-        heatmap_src = f'data:image/png;base64,{encoded_heatmap}'
+        heatmap_plot.savefig(heatmap_file)
     else:
+        # simple heatmap for large matrices
         plt.figure(figsize=(15, 15))
         sns.heatmap(current_amatrix, cmap='Spectral')
-        heatmap_buffer = BytesIO()
-        plt.savefig(heatmap_buffer, format='png')
-        heatmap_buffer.seek(0)
+        plt.savefig(heatmap_file)
         plt.close()
-        encoded_heatmap = base64.b64encode(heatmap_buffer.read()).decode('utf-8')
-        heatmap_src = f'data:image/png;base64,{encoded_heatmap}'
 
-    store_data = current_amatrix.to_dict()
+    # Dash loads the PNG directly from disk
+    heatmap_src = f"/download?filename={urllib.parse.quote(heatmap_file)}&type=image"
 
     # ---------------------------------------------------------
-    # Stop timer
+    # END TIMER
     # ---------------------------------------------------------
-    if not timer_data:
-        timer_data = {}
+    elapsed = time.time() - start_time
+    print(f"[Matrix Timer] Finished in {elapsed:.2f} seconds\n")
 
-    timer_data["running"] = False
-
-
+    # ---------------------------------------------------------
+    # RETURN (only file paths, never the matrix itself)
+    # ---------------------------------------------------------
     return (
         heatmap_src,
         full_matrix_link,
-        os.path.basename(file_path),  # prevents dataset dump
-        store_data,
-        True
+        os.path.basename(matrix_file),
+        {"path": matrix_file}   # store only the file path
     )
-
 
 
 @app.callback(
@@ -2205,8 +2206,7 @@ def generate_amatrix_and_heatmap(n_clicks, selected_line_names, method_choice, t
         Output('download-full-link-dummy', 'href'),
         Output('full-matrix-csv-path-dummy', 'children'),
         Output('matrix-store-dummy', 'data')
-    ],
-    [Input('generate-amatrix-button-dummy', 'n_clicks')],
+    ],  [Input('generate-amatrix-button-dummy', 'n_clicks')],
     [
         State('temp-progeny-list-main', 'children'),
         State('kinship-method-slider', 'value')  # <--- add slider state
@@ -2484,19 +2484,6 @@ def combine_pedigree_with_new_rows(main_df, new_rows):
 
 
 
-@app.callback(
-    Output('download-subset-link', 'href'),
-    [Input('subset-dropdown', 'value')]
-)
-def update_subset_matrix_download_link(subset_values):
-    if not subset_values or current_amatrix is None:
-        return dash.no_update
-    subset_amatrix = current_amatrix.loc[subset_values, subset_values]
-    file_name = f"subset_matrix_{int(time.time())}.csv"
-    file_path = os.path.join(OUTPUT_DIR, file_name)
-    subset_amatrix.to_csv(file_path)
-    safe_filename_subset = urllib.parse.quote(file_path)
-    return f'/download?filename={safe_filename_subset}&type=subset'
 
 
 @app.callback(
@@ -2774,7 +2761,7 @@ def generate_combined_family_tree(n_clicks, line1, line2):
 
     relatives_df = filtered_df[filtered_df['LineName'].isin(all_lines)]
     dot = graphviz.Digraph(comment='Combined Family Tree')
-    dot.attr('node', shape='ellipse', style='filled')
+    dot.attr('node', shape='ellipse', style='filled', fontname="Arial Bold")
 
     for _, row in relatives_df.iterrows():
         ln = row['LineName']
@@ -2976,6 +2963,25 @@ def upload_file(contents, filename, last_modified):
     except Exception as e:
         print(e)
         return "There was an error processing the file"
+
+@server.route("/download")
+def download():
+    filename = request.args.get("filename")
+    file_type = request.args.get("type")
+
+    if not filename or not file_type:
+        return "Missing parameters", 400
+
+    if file_type == "full":
+        return send_file(filename, as_attachment=True)
+
+    if file_type == "subset":
+        return send_file(filename, as_attachment=True)
+
+    if file_type == "image":
+        return send_file(filename, mimetype="image/png")
+
+    return "Invalid file type", 400
 
 
 if __name__ == '__main__':
