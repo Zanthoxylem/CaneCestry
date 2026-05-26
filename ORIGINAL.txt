@@ -37,7 +37,7 @@ from pathlib import Path
 
 
 # A threshold to skip clustering if matrix exceeds this size
-MAX_CLUSTER_SIZE = 300
+MAX_CLUSTER_SIZE = 300000
 
 # A compiled regex for names with digits + exactly one 'p' or 'P' and no other letters : For Polycrosses
 pattern_poly_p = re.compile(r'^\d*[pP]\d*$')
@@ -48,36 +48,21 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Initialize Flask server
 server = Flask(__name__)
-BASE_DIR = Path(__file__).resolve().parent
-def load_current_pedigree():
-    user_folder = BASE_DIR / "pedigree" / "user_input"
-    default_file = BASE_DIR / "pedigree" / "Pedigree_Subset.txt"
 
-    # Find all .txt files in user_data
-    txt_files = list(user_folder.glob("*.txt"))
 
-    if txt_files:
-        # Use the first .txt file found
-        user_file = txt_files[0]
-        print("Loading USER pedigree:", user_file)
-        return pd.read_csv(user_file, sep="\t")
-
-    # Otherwise use default
-    print("Loading DEFAULT pedigree:", default_file)
-    return pd.read_csv(default_file, sep="\t")
 
 #region Setting up data
 # =============================================================================
 # 1. Store Built-In (Default) Sugarcane Data and Create a Copy for df
 # =============================================================================
-
+BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_FILE = BASE_DIR / "pedigree" / "Pedigree_Subset.txt"
-USER_FILE = BASE_DIR / "pedigree" / "user_input" / "pedigree.txt"
+USER_FILE = BASE_DIR / "pedigree" / "user_data" / "pedigree.txt"
 
 default_df = pd.read_csv(DEFAULT_FILE, sep="\t")
-df = load_current_pedigree()
-print("df loaded from:", df.head())
+PEDIGREE_PATH = USER_FILE if USER_FILE.exists() else DEFAULT_FILE
 
+df = pd.read_csv(PEDIGREE_PATH, sep="\t")
 
 # Create filtered_df from df
 parents_set = set(df['MaleParent'].tolist() + df['FemaleParent'].tolist())
@@ -177,7 +162,6 @@ CUSTOM_CSS = {
         'marginTop': '0px'         # Reduced top margin to move groups up
     }
 }
-
 
 
 #endregion
@@ -462,7 +446,7 @@ def splash_page_layout():
         dbc.Row(
             dbc.Col(
                 html.A(
-                    "Generate Kinship Matrix",  # Renamed here
+                    "Generate Kinship Matrix w/ Decendants",  # Renamed here
                     href="/main-page",
                     className="btn",
                     style={
@@ -485,6 +469,32 @@ def splash_page_layout():
             justify="center"
         ),
 
+        # 2) BUTTON FOR SUBSET PEDIGREE PAGE
+        dbc.Row(
+            dbc.Col(
+                html.A(
+                    "Generate Kinship Matrix w/o Decendants",  # New separate button
+                    href="/subset-pedigree-page",
+                    className="btn",
+                    style={
+                        "width": "300px",
+                        "height": "80px",
+                        "fontSize": "20px",
+                        "marginBottom": "10px",
+                        "backgroundColor": "#2980b9",
+                        "color": "white",
+                        "borderRadius": "10px",
+                        "fontWeight": "bold",
+                        "display": "flex",
+                        "justifyContent": "center",
+                        "alignItems": "center",
+                        "textDecoration": "none"
+                    }
+                ),
+                width="auto"
+            ),
+            justify="center"
+        ),
 
         # REMAINING BUTTONS/ROWS...
         dbc.Row(
@@ -597,22 +607,6 @@ def main_page_layout():
         ),
 
 
-        dbc.Row([
-            dbc.Col(
-                dcc.RadioItems(
-                    id='descendant-toggle',
-                    options=[
-                        {'label': 'Include Descendants', 'value': 'with'},
-                        {'label': 'Exclude Descendants', 'value': 'without'}
-                    ],
-                    value='with',
-                    labelStyle={'display': 'inline-block', 'margin-right': '20px'},
-                    style={'font-weight': 'bold', 'margin-top': '20px'}
-                ),
-                width=12
-            )
-        ]),
-
 
 
         # Row #4: Label + dropdown + input
@@ -652,15 +646,7 @@ def main_page_layout():
                 style={'margin-top': '10px'}
             )
         ),
-        # Timer + ETA display
-        dbc.Row(
-            dbc.Col(
-                html.Div(
-                    id="matrix-timer-display",
-                    style={'fontSize': '20px', 'marginTop': '10px', 'fontWeight': 'bold'}
-                )
-            )
-        ),
+
         # Row #6: Buttons (Generate, Download, etc.)
         dbc.Row([
             dbc.Col(
@@ -695,18 +681,6 @@ def main_page_layout():
                 width=4
             )
         ], style={'margin-top': '20px'}, className="mb-4"),
-
-
-
-        # Interval + Store for timer
-        dcc.Interval(
-            id="matrix-timer-interval",
-            interval=500,  # update every 0.5 seconds
-            n_intervals=0,
-            disabled=True
-        ),
-        dcc.Store(id="data-store"),
-        dcc.Store(id="matrix-timer-store"),
 
         # Row #7: Loading/feedback area
         dbc.Row(
@@ -918,6 +892,188 @@ def add_temp_entries():
 
 
 
+
+# =============================================================================
+# D. Kinship matrix calculation without descendants
+# =============================================================================
+def subset_pedigree_page_layout():
+    """
+    A page layout where the user can pick lines of interest either by selecting
+    from a dropdown or pasting a comma-separated list. The code then builds a
+    reduced pedigree (lines + ancestors only) and computes the A-matrix for that subset.
+    """
+    content = [
+        # Row #1: Page header
+        dbc.Row(
+            dbc.Col(
+                html.H3(
+                    "Subset Pedigree: Lines of Interest + Ancestors",
+                    style=CUSTOM_CSS['header']
+                )
+            )
+        ),
+
+        # Row #2: Dropdown for lines of interest
+        dbc.Row([
+            dbc.Col(
+                dcc.Dropdown(
+                    id='subset-pedigree-lines-dropdown',
+                    options=[{'label': ln, 'value': ln} for ln in df['LineName'].unique()],
+                    multi=True,
+                    placeholder="Select lines of interest...",
+                    style=CUSTOM_CSS['dropdown']
+                ),
+                width=12
+            )
+        ]),
+
+        # Row #3: Input for comma-separated lines
+        dbc.Row([
+            dbc.Col(
+                dcc.Input(
+                    id='subset-pedigree-paste-input',
+                    type='text',
+                    placeholder="Paste comma-separated line names here...",
+                    style={'margin-top': '10px', 'width': '100%'}
+                ),
+                width=12
+            )
+        ]),
+
+        # Row #4: Label for slider
+        dbc.Row([
+            dbc.Col(
+                html.Label("Select Calculation Method:", style={'font-weight': 'bold'}),
+                width=12
+            )
+        ]),
+
+        dbc.Row(
+            [
+                dbc.Col(
+                    html.Div(
+                        [
+                            dcc.Slider(
+                                id='kinship-method-slider',
+                                min=0,
+                                max=1,
+                                step=1,
+                                marks={
+                                    0: 'A Matrix (Henderson)',
+                                    1: 'Coancestry Matrix (Henderson)'
+                                },
+                                value=1,
+                                tooltip={"placement": "bottom", "always_visible": True},
+                            )
+                        ],
+                        style={'width': '300px'}
+                    ),
+                    width="auto"
+                )
+            ],
+            justify="center"  # <--- This will center the column horizontally
+        ),
+
+        # Row #6: "Build Subset & Compute Matrix" button
+        dbc.Row([
+            dbc.Col(
+                html.Button(
+                    "Build Subset & Compute Matrix",
+                    id="subset-build-matrix-button",
+                    className="btn btn-info",
+                    style=CUSTOM_CSS['button']
+                ),
+                width=12
+            )
+        ]),
+
+        # Row #7: Output area for subset-pedigree-output
+        dbc.Row([
+            dbc.Col(
+                html.Div(
+                    id='subset-pedigree-output',
+                    style={'marginTop': '20px'}
+                ),
+                width=12
+            )
+        ]),
+
+        html.Hr(),
+
+        # Row #8: Subset the computed matrix label
+        dbc.Row([
+            dbc.Col(
+                html.H4("Subset the Computed Matrix"),
+                width=12
+            )
+        ]),
+
+        html.Div(id='subset-pedigree-full-matrix-csv-path', style={'display': 'none'}),
+        dcc.Store(id='subset-pedigree-matrix-store'),
+
+        # Row #9: Sub-subsetting the matrix
+        dbc.Row([
+            dbc.Col(
+                dcc.Dropdown(
+                    id='subset-pedigree-subset-dropdown',
+                    options=[],
+                    multi=True,
+                    placeholder="Select lines for subset matrix...",
+                    style=CUSTOM_CSS['dropdown']
+                ),
+                width=9
+            ),
+            dbc.Col(
+                html.A(
+                    "Download Subset Matrix",
+                    id='subset-pedigree-download-subset-link',
+                    href='',
+                    download='subset_matrix.csv',
+                    className="btn btn-warning",
+                    style=CUSTOM_CSS['button']
+                ),
+                width=3
+            )
+        ], style={'margin-top': '20px'}),
+
+        # Row #10: Pasting lines for sub-subset
+        dbc.Row([
+            dbc.Col(
+                dcc.Input(
+                    id='subset-pedigree-subset-paste-input',
+                    type='text',
+                    placeholder="Paste comma-separated line names here...",
+                    style={'width': '100%'}
+                ),
+                width=12
+            )
+        ], style={'margin-top': '20px'}),
+
+        # Row #11: Display sub-subset table
+        dbc.Row([
+            dbc.Col(
+                html.Div(id='subset-pedigree-subset-display'),
+                width=12
+            )
+        ]),
+
+        # Row #12: "Back to Main Page"
+        dbc.Row([
+            dbc.Col(
+                html.A(
+                    "Back to Main Page",
+                    href="/main-page",
+                    className="btn btn-secondary",
+                    style=CUSTOM_CSS['button']
+                ),
+                width=12
+            )
+        ]),
+    ]
+
+    return base_layout(content)
+
+#endregion
 
 
 
@@ -1186,6 +1342,8 @@ def display_page(pathname):
         return pedigree_explorer()
     elif pathname == '/dummy-progeny-matrix':
         return add_temp_entries()
+    elif pathname == '/subset-pedigree-page':
+        return subset_pedigree_page_layout()
     else:
         return splash_page_layout()
 
@@ -1259,7 +1417,17 @@ def update_current_data_table(data):
     return html.Table([table_header, table_body], className="table")
 
 
-
+@app.callback(
+    Output('data-store', 'data'),
+    Input('clear-data-button', 'n_clicks'),  # or any callback that modifies your dataset
+    prevent_initial_call=True
+)
+def update_data_store(n_clicks):
+    # When clearing data, reset to the original sugarcane dataset.
+    global df, default_df
+    if n_clicks:
+        df = default_df.copy()
+    return df.to_dict('records')
 
 #endregion
 
@@ -1268,7 +1436,29 @@ def update_current_data_table(data):
 
 #region Logic behind adding data and the web elements associated
 
-# ==========================================================================
+# =============================================================================
+# 3. Callback to Clear Data (reset df to default_df)
+# =============================================================================
+@app.callback(
+    [Output('clear-data-button', 'children'),
+     Output('data-store', 'data', allow_duplicate=True)],
+    Input('clear-data-button', 'n_clicks'),
+    prevent_initial_call=True
+)
+def clear_uploaded_data(n_clicks):
+    global df, default_df, filtered_df, parents_set
+    if n_clicks:
+        df = default_df.copy()
+        parents_set = set(df['MaleParent'].tolist() + df['FemaleParent'].tolist())
+        mask = (
+            ~df['LineName'].isin(parents_set)
+            & (df['MaleParent'].isna() | df['MaleParent'].isnull())
+            & (df['FemaleParent'].isna() | df['FemaleParent'].isnull())
+        )
+        filtered_df = df[~mask]
+        return [html.I(className="fas fa-trash"), " Cleared!"], default_df.to_dict('records')
+    return dash.no_update, dash.no_update
+
 
 
 @app.callback(
@@ -1283,6 +1473,37 @@ def toggle_splash_upload_section(choice):
 
 
 
+@app.callback(
+    Output('splash-upload-status', 'children'),
+    [Input('splash-upload-data', 'contents')],
+    [State('splash-upload-data', 'filename')]
+)
+def upload_file_splash(contents, filename):
+    if contents is None:
+        return ""
+    content_type, content_string = contents.split(',')
+    decoded = base64.b64decode(content_string)
+    try:
+        if filename.lower().endswith('.txt'):
+            uploaded_df = pd.read_csv(BytesIO(decoded), sep='\t')
+        elif filename.lower().endswith('.csv'):
+            uploaded_df = pd.read_csv(BytesIO(decoded))
+        else:
+            return "Unsupported file format (must be .csv or .txt)."
+
+        global df, filtered_df, parents_set
+        df = uploaded_df
+        parents_set = set(df['MaleParent'].tolist() + df['FemaleParent'].tolist())
+        mask = (
+            ~df['LineName'].isin(parents_set)
+            & (df['MaleParent'].isna() | df['MaleParent'].isnull())
+            & (df['FemaleParent'].isna() | df['FemaleParent'].isnull())
+        )
+        filtered_df = df[~mask]
+        return f"Successfully uploaded {filename}"
+    except Exception as e:
+        print(e)
+        return "Error processing file"
 
 
 @app.callback(
@@ -1320,25 +1541,7 @@ def make_df_from_store(n_clicks, store_data):
     return ""
 
 
-@app.callback(
-    Output('download-subset-link', 'href'),
-    Input('subset-dropdown', 'value'),
-    State('matrix-store', 'data')
-)
-def make_subset(selected_lines, matrix_info):
-    if not selected_lines or not matrix_info:
-        raise PreventUpdate
 
-    file_path = matrix_info["path"]
-    full_matrix = pd.read_csv(file_path, index_col=0)
-
-    subset = full_matrix.loc[selected_lines, selected_lines]
-
-    subset_file = file_path.replace("full_matrix", "subset_matrix")
-    subset.to_csv(subset_file)
-
-    safe = urllib.parse.quote(subset_file)
-    return f"/download?filename={safe}&type=subset"
 
 
 #endregion
@@ -1462,67 +1665,32 @@ def get_paternal_line(line_name, df, collected=None):
 
 def sort_pedigree_df(pedigree_df):
     """
-    Safe, non-recursive pedigree sorter.
-    Handles cycles, missing parents, placeholder parents, and large pedigrees.
-    Returns a dataframe sorted so that parents always appear before children.
+    Sorts the pedigree DataFrame in topological order so that each parent
+    appears before its progeny. This is essential for a single-pass matrix build.
     """
+    sorted_df = pd.DataFrame(columns=pedigree_df.columns)
+    processed = set()
 
-    # Clean parent names
-    def clean(x):
-        if pd.isna(x):
-            return None
-        x = str(x).strip()
-        if x in ["", ".", "0", "NA", "nan", "None"]:
-            return None
-        return x
+    def add_to_sorted_df(line_name):
+        if line_name in processed:
+            return
+        row = pedigree_df[pedigree_df['LineName'] == line_name]
+        if not row.empty:
+            sire = row.iloc[0]['MaleParent']
+            dam = row.iloc[0]['FemaleParent']
 
-    # Build parent map
-    parents = {}
-    for _, row in pedigree_df.iterrows():
-        ln = row["LineName"]
-        sire = clean(row["MaleParent"])
-        dam = clean(row["FemaleParent"])
-        parents[ln] = [sire, dam]
+            if pd.notna(sire) and sire in pedigree_df['LineName'].values:
+                add_to_sorted_df(sire)
+            if pd.notna(dam) and dam in pedigree_df['LineName'].values:
+                add_to_sorted_df(dam)
 
-    # Build graph edges: parent → child
-    children = defaultdict(list)
-    indegree = defaultdict(int)
+            nonlocal sorted_df
+            sorted_df = pd.concat([sorted_df, row], ignore_index=True)
+            processed.add(line_name)
 
-    for child, (sire, dam) in parents.items():
-        for p in (sire, dam):
-            if p is not None:
-                children[p].append(child)
-                indegree[child] += 1
+    for ln in pedigree_df['LineName']:
+        add_to_sorted_df(ln)
 
-    # Initialize queue with founders (indegree = 0)
-    queue = [ln for ln in pedigree_df["LineName"] if indegree[ln] == 0]
-
-    visited = set()
-    sorted_list = []
-
-    # Kahn's algorithm (topological sort)
-    while queue:
-        ln = queue.pop()
-        if ln in visited:
-            continue
-
-        visited.add(ln)
-        sorted_list.append(ln)
-
-        for child in children.get(ln, []):
-            indegree[child] -= 1
-            if indegree[child] == 0:
-                queue.append(child)
-
-    # If cycles exist, add remaining nodes at the end
-    remaining = [ln for ln in pedigree_df["LineName"] if ln not in visited]
-    if remaining:
-        print("⚠ WARNING: Pedigree contains cycles or unresolved parents.")
-        print("  These lines were placed at the end:", remaining)
-        sorted_list.extend(remaining)
-
-    # Rebuild sorted dataframe
-    sorted_df = pedigree_df.set_index("LineName").loc[sorted_list].reset_index()
     return sorted_df
 
 
@@ -1751,7 +1919,7 @@ def generate_family_tree(n_clicks, lineage_mode, selected_line_name, generation_
     paternal_line = set(get_paternal_line(selected_line_name, filtered_df))
 
     dot = graphviz.Digraph(comment='Family Tree')
-    dot.attr('node', shape='ellipse', style='filled', fontsize='30', fontname = "Helvetica")
+    dot.attr('node', shape='ellipse', style='filled', fontsize='20')
 
     # Draw nodes with potential highlighting
     for line in subset_nodes:
@@ -1812,19 +1980,12 @@ def generate_family_tree(n_clicks, lineage_mode, selected_line_name, generation_
     )
     dot.edge("pedigree_summary", selected_line_name, style="invis")
 
-    # Increase DPI for crisp lines and text
-    dot.attr(dpi='300')
-
-    # Generate high-resolution PNG
-    png_bytes = dot.pipe(format='png')
-
+    # Generate and encode the image
     tree_buffer = BytesIO()
-    tree_buffer.write(png_bytes)
+    tree_buffer.write(dot.pipe(format='png'))
     tree_buffer.seek(0)
-
     encoded_tree = base64.b64encode(tree_buffer.read()).decode('utf-8')
     tree_src = f'data:image/png;base64,{encoded_tree}'
-
     return html.Img(src=tree_src, style=CUSTOM_CSS['image'])
 
 
@@ -1832,176 +1993,7 @@ def generate_family_tree(n_clicks, lineage_mode, selected_line_name, generation_
 
 #endregion
 
-@app.callback(
-    [
-        Output('splash-upload-status', 'children'),
-        Output('clear-data-button', 'children'),
-        Output('add-ped-upload-status', 'children'),
-        Output('add-ped-missing-rows-store', 'data'),
-        Output('add-ped-rows-store', 'data'),
-        Output('data-store', 'data')
-    ],
-    [
-        Input('splash-upload-data', 'contents'),
-        Input('clear-data-button', 'n_clicks'),
-        Input('add-ped-upload', 'contents'),
-        Input('add-ped-save-corrections-btn', 'n_clicks')
-    ],
-    [
-        State('splash-upload-data', 'filename'),
-        State('add-ped-upload', 'filename'),
-        State({'type': 'missing-parent-male', 'index': ALL}, 'value'),
-        State({'type': 'missing-parent-female', 'index': ALL}, 'value'),
-        State('add-ped-missing-rows-store', 'data'),
-        State('add-ped-rows-store', 'data')
-    ],
-    prevent_initial_call=True
-)
-def unified_dataset_manager(
-    splash_contents, clear_clicks, addped_contents, save_clicks,
-    splash_filename, addped_filename,
-    male_values, female_values,
-    invalid_rows, valid_rows
-):
-    global df, filtered_df, default_df
 
-    ctx = dash.callback_context
-    if not ctx.triggered:
-        raise PreventUpdate
-
-    trigger = ctx.triggered[0]['prop_id'].split('.')[0]
-
-    # ---------------------------------------------------------
-    # 1. CLEAR DATA
-    # ---------------------------------------------------------
-    if trigger == 'clear-data-button':
-        df = default_df.copy()
-        parents_set = set(df['MaleParent'].tolist() + df['FemaleParent'].tolist())
-        mask = (
-            ~df['LineName'].isin(parents_set)
-            & (df['MaleParent'].isna() | df['MaleParent'].isnull())
-            & (df['FemaleParent'].isna() | df['FemaleParent'].isnull())
-        )
-        filtered_df = df[~mask]
-
-        return (
-            "",  # splash-upload-status
-            [html.I(className="fas fa-trash"), " Cleared!"],  # clear-data-button
-            "",  # add-ped-upload-status
-            [],  # missing rows store
-            [],  # valid rows store
-            filtered_df.to_dict('records')  # data-store
-        )
-
-    # ---------------------------------------------------------
-    # 2. SPLASH PAGE UPLOAD
-    # ---------------------------------------------------------
-    if trigger == 'splash-upload-data':
-        if splash_contents is None:
-            raise PreventUpdate
-
-        content_type, content_string = splash_contents.split(',')
-        decoded = base64.b64decode(content_string)
-
-        # Save uploaded pedigree
-        user_path = BASE_DIR / "pedigree" / "user_data" / "pedigree.txt"
-        with open(user_path, "wb") as f:
-            f.write(decoded)
-
-        # Load dataframe
-        try:
-            if splash_filename.lower().endswith('.txt'):
-                df_new = pd.read_csv(BytesIO(decoded), sep='\t')
-            else:
-                df_new = pd.read_csv(BytesIO(decoded))
-        except Exception:
-            return ("Error processing file", "", "", [], [], dash.no_update)
-
-        # Recompute filtered_df
-        parents_set = set(df_new['MaleParent'].tolist() + df_new['FemaleParent'].tolist())
-        mask = (
-            ~df_new['LineName'].isin(parents_set)
-            & (df_new['MaleParent'].isna() | df_new['MaleParent'].isnull())
-            & (df_new['FemaleParent'].isna() | df_new['FemaleParent'].isnull())
-        )
-        filtered_df_new = df_new[~mask]
-
-        df = df_new
-        filtered_df = filtered_df_new
-
-        return (
-            f"Successfully uploaded {splash_filename}",
-            "",  # clear button text unchanged
-            "",  # add-ped status unchanged
-            [],  # missing rows
-            [],  # valid rows
-            filtered_df_new.to_dict('records')
-        )
-
-    # ---------------------------------------------------------
-    # 3. ADD-PED UPLOAD
-    # ---------------------------------------------------------
-    if trigger == 'add-ped-upload':
-        if addped_contents is None:
-            raise PreventUpdate
-
-        content_type, content_string = addped_contents.split(',')
-        decoded = base64.b64decode(content_string)
-
-        try:
-            new_df = pd.read_csv(BytesIO(decoded), sep='\t')
-        except Exception as e:
-            return ("", "", f"Error reading file: {e}", [], [], dash.no_update)
-
-        required_cols = {'LineName', 'FemaleParent', 'MaleParent'}
-        if not required_cols.issubset(new_df.columns):
-            return ("", "", "File must have LineName, FemaleParent, MaleParent", [], [], dash.no_update)
-
-        existing = set(df['LineName'].unique())
-        invalid = []
-        valid = []
-
-        for _, row in new_df.iterrows():
-            ln = str(row['LineName']).strip()
-            mp = str(row['MaleParent']).strip() if pd.notna(row['MaleParent']) else ''
-            fp = str(row['FemaleParent']).strip() if pd.notna(row['FemaleParent']) else ''
-
-            male_ok = (mp == '') or (mp in existing)
-            female_ok = (fp == '') or (fp in existing)
-
-            (valid if male_ok and female_ok else invalid).append(row.to_dict())
-
-        msg = f"Uploaded {addped_filename}. Valid: {len(valid)}; Invalid: {len(invalid)}."
-
-        return ("", "", msg, invalid, valid, dash.no_update)
-
-    # ---------------------------------------------------------
-    # 4. ADD-PED SAVE CORRECTIONS
-    # ---------------------------------------------------------
-    if trigger == 'add-ped-save-corrections-btn':
-        if not invalid_rows:
-            return ("", "", "No invalid rows to correct.", [], [], dash.no_update)
-
-        # Apply corrections
-        for i, row in enumerate(invalid_rows):
-            row['MaleParent'] = male_values[i] or ''
-            row['FemaleParent'] = female_values[i] or ''
-
-        updated_valid = valid_rows + invalid_rows
-        new_entries_df = pd.DataFrame(updated_valid)
-
-        df = pd.concat([df, new_entries_df], ignore_index=True)
-
-        return (
-            "",  # splash status
-            "",  # clear button
-            "Corrections saved successfully!",
-            [],  # missing rows cleared
-            updated_valid,
-            df.to_dict('records')
-        )
-
-    raise PreventUpdate
 
 #region Old find Ancestors, Descendants, Relatives
 
@@ -2045,66 +2037,17 @@ def old_find_descendants(line_names, df, processed=None):
     return old_find_descendants(all_relatives, df, processed)
 
 
-def old_find_relatives(selected_lines, df):
-    """
-    Return selected lines + all ancestors + all descendants.
-    Full pedigree BFS in both directions.
-    """
-    relatives = set(selected_lines)
-    queue = list(selected_lines)
-
-    parent_lookup = df.set_index('LineName')[['MaleParent', 'FemaleParent']]
-
-    child_lookup = defaultdict(list)
-    for _, row in df.iterrows():
-        if pd.notna(row['MaleParent']):
-            child_lookup[row['MaleParent']].append(row['LineName'])
-        if pd.notna(row['FemaleParent']):
-            child_lookup[row['FemaleParent']].append(row['LineName'])
-
-    while queue:
-        line = queue.pop(0)
-
-        # Upward (ancestors)
-        if line in parent_lookup.index:
-            row = parent_lookup.loc[line]
-
-            # If multiple rows exist for this LineName, take the first
-            if isinstance(row, pd.DataFrame):
-                row = row.iloc[0]
-
-            male = row['MaleParent']
-            female = row['FemaleParent']
-
-            for parent in (male, female):
-                if pd.notna(parent) and parent not in relatives:
-                    relatives.add(parent)
-                    queue.append(parent)
-
-        # Downward (descendants)
-        for child in child_lookup.get(line, []):
-            if child not in relatives:
-                relatives.add(child)
-                queue.append(child)
-
-    return relatives
+def old_find_relatives(line_names, df):
+    ancestors = old_find_ancestors(line_names, df)
+    descendants = old_find_descendants(line_names, df)
+    descendant_ancestors = [old_find_ancestors([d], df) for d in descendants]
+    flat_desc_ances = [item for sublist in descendant_ancestors for item in sublist]
+    all_relatives = list(set(ancestors + descendants + flat_desc_ances))
+    return all_relatives
 
 
+#endregion
 
-
-@app.callback(
-    Output("matrix-timer-display", "children"),
-    Input("matrix-timer-interval", "n_intervals"),
-    State("matrix-timer-store", "data")
-)
-def update_matrix_timer(n, timer_data):
-    if not timer_data or not timer_data.get("running"):
-        return ""
-
-    elapsed = time.time() - timer_data["start_time"]
-    eta = max(timer_data["estimated_seconds"] - elapsed, 0)
-
-    return f"Elapsed: {elapsed:.1f}s | Estimated remaining: {eta:.1f}s"
 
 @app.callback(
     [
@@ -2113,91 +2056,55 @@ def update_matrix_timer(n, timer_data):
         Output('full-matrix-csv-path', 'children'),
         Output('matrix-store', 'data')
     ],
-    Input('generate-amatrix-button', 'n_clicks'),
-    [
-        State('line-name-dropdown', 'value'),
-        State('kinship-method-slider', 'value'),
-        State('descendant-toggle', 'value')
-    ],
-    prevent_initial_call=True
+    [Input('generate-amatrix-button', 'n_clicks')],
+    [State('line-name-dropdown', 'value'),
+     State('kinship-method-slider', 'value')]
 )
-def generate_amatrix_and_heatmap(n_clicks, selected_line_names, method_choice, toggle_value):
+def generate_amatrix_and_heatmap(n_clicks, selected_line_names, method_choice):
+    if n_clicks is None or not selected_line_names:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
-    if not n_clicks or not selected_line_names:
-        raise PreventUpdate
-
-    # ---------------------------------------------------------
-    # START TIMER (console only)
-    # ---------------------------------------------------------
-    start_time = time.time()
-    print("\n[Matrix Timer] Starting computation...")
-
-    # ---------------------------------------------------------
-    # COLLECT LINES
-    # ---------------------------------------------------------
-    if toggle_value == "with":
-        all_related_lines = old_find_relatives(selected_line_names, filtered_df)
-    else:
-        all_related_lines = collect_lines_with_ancestors_only(selected_line_names, filtered_df)
-
+    all_related_lines = old_find_relatives(selected_line_names, filtered_df)
     relatives_df = filtered_df[filtered_df['LineName'].isin(all_related_lines)]
 
-    # ---------------------------------------------------------
-    # MATRIX COMPUTATION
-    # ---------------------------------------------------------
+    # Select method based on slider value
     if method_choice == 0:
-        current_amatrix = compute_amatrix_diploid(relatives_df)
-    else:
-        current_amatrix = compute_amatrix_polyploid(relatives_df)
+        current_amatrix = compute_amatrix_diploid(relatives_df)  # Standard Henderson
+    elif method_choice == 1:
+        current_amatrix = compute_amatrix_polyploid(relatives_df)  # Modified Henderson for Polyploids
 
-    # Save full matrix to disk
-    matrix_file = os.path.join(OUTPUT_DIR, f"full_matrix_{int(time.time())}.csv")
-    current_amatrix.to_csv(matrix_file)
 
-    safe_matrix = urllib.parse.quote(matrix_file)
-    full_matrix_link = f"/download?filename={safe_matrix}&type=full"
+    file_name = f"full_matrix_{int(time.time())}.csv"
+    file_path = os.path.join(OUTPUT_DIR, file_name)
+    current_amatrix.to_csv(file_path)
+    safe_filename_full = urllib.parse.quote(file_path)
+    full_matrix_link = f'/download?filename={safe_filename_full}&type=full'
 
-    # ---------------------------------------------------------
-    # HEATMAP GENERATION (saved to disk, not base64)
-    # ---------------------------------------------------------
     n_lines = len(current_amatrix)
-    heatmap_file = os.path.join(OUTPUT_DIR, f"heatmap_{int(time.time())}.png")
+    if n_lines == 0:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
-    if n_lines <= 300:
-        # clustered heatmap
-        heatmap_plot = sns.clustermap(
-            current_amatrix,
-            method='average',
-            cmap='Spectral',
-            figsize=(15, 15)
-        )
+    if n_lines <= MAX_CLUSTER_SIZE:
+        heatmap_plot = sns.clustermap(current_amatrix, method='average', cmap='Spectral', figsize=(15, 15))
         plt.close(heatmap_plot.fig)
-        heatmap_plot.savefig(heatmap_file)
+        heatmap_buffer = BytesIO()
+        heatmap_plot.savefig(heatmap_buffer, format='png')
+        heatmap_buffer.seek(0)
+        encoded_heatmap = base64.b64encode(heatmap_buffer.read()).decode('utf-8')
+        heatmap_src = f'data:image/png;base64,{encoded_heatmap}'
     else:
-        # simple heatmap for large matrices
         plt.figure(figsize=(15, 15))
         sns.heatmap(current_amatrix, cmap='Spectral')
-        plt.savefig(heatmap_file)
+        heatmap_buffer = BytesIO()
+        plt.savefig(heatmap_buffer, format='png')
+        heatmap_buffer.seek(0)
         plt.close()
+        encoded_heatmap = base64.b64encode(heatmap_buffer.read()).decode('utf-8')
+        heatmap_src = f'data:image/png;base64,{encoded_heatmap}'
 
-    # Dash loads the PNG directly from disk
-    heatmap_src = f"/download?filename={urllib.parse.quote(heatmap_file)}&type=image"
+    store_data = current_amatrix.to_dict()
+    return heatmap_src, full_matrix_link, file_path, store_data
 
-    # ---------------------------------------------------------
-    # END TIMER
-    # ---------------------------------------------------------
-    elapsed = time.time() - start_time
-    print(f"[Matrix Timer] Finished in {elapsed:.2f} seconds\n")
-
-    # ---------------------------------------------------------
-    # RETURN (only file paths, never the matrix itself)
-    # ---------------------------------------------------------
-    return (
-        heatmap_src,
-        full_matrix_link,
-        os.path.basename(matrix_file),
-        {"path": matrix_file}   # store only the file path
-    )
 
 
 @app.callback(
@@ -2206,7 +2113,8 @@ def generate_amatrix_and_heatmap(n_clicks, selected_line_names, method_choice, t
         Output('download-full-link-dummy', 'href'),
         Output('full-matrix-csv-path-dummy', 'children'),
         Output('matrix-store-dummy', 'data')
-    ],  [Input('generate-amatrix-button-dummy', 'n_clicks')],
+    ],
+    [Input('generate-amatrix-button-dummy', 'n_clicks')],
     [
         State('temp-progeny-list-main', 'children'),
         State('kinship-method-slider', 'value')  # <--- add slider state
@@ -2478,12 +2386,123 @@ def combine_pedigree_with_new_rows(main_df, new_rows):
 
 
 
+@app.callback(
+    [
+        Output('add-ped-missing-rows-store', 'data'),
+        Output('add-ped-rows-store', 'data'),
+        Output('add-ped-upload-status', 'children'),
+        Output('data-store', 'data', allow_duplicate=True)  # New output to update the main dataset store
+    ],
+    [
+        Input('add-ped-upload', 'contents'),
+        Input('add-ped-save-corrections-btn', 'n_clicks'),
+    ],
+    [
+        State('add-ped-upload', 'filename'),
+        State({'type': 'missing-parent-male', 'index': ALL}, 'value'),
+        State({'type': 'missing-parent-female', 'index': ALL}, 'value'),
+        State('add-ped-missing-rows-store', 'data'),
+        State('add-ped-rows-store', 'data'),
+    ],
+    prevent_initial_call=True
+)
+def handle_upload_and_save_corrections(upload_contents, save_clicks,
+                                       filename,
+                                       male_values, female_values,
+                                       invalid_rows, valid_rows):
+    global df  # we continue to use df as our working global dataset
+
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        raise PreventUpdate
+
+    triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
+
+    # Branch for file upload
+    if triggered_id == 'add-ped-upload':
+        if not upload_contents:
+            raise PreventUpdate
+
+        content_type, content_string = upload_contents.split(',')
+        decoded = base64.b64decode(content_string)
+
+        if not filename.lower().endswith('.txt'):
+            return dash.no_update, dash.no_update, "Please upload a .txt file (tab-delimited).", dash.no_update
+
+        try:
+            new_df = pd.read_csv(BytesIO(decoded), sep='\t', encoding='latin-1')
+        except Exception as e:
+            return dash.no_update, dash.no_update, f"Error reading file: {e}", dash.no_update
+
+        required_cols = {'LineName', 'FemaleParent', 'MaleParent'}
+        if not required_cols.issubset(new_df.columns):
+            msg = "File must have columns: LineName, FemaleParent, MaleParent"
+            return dash.no_update, dash.no_update, msg, dash.no_update
+
+        # Use current df to validate; you may choose to use the store instead
+        existing_lines = set(df['LineName'].unique())
+        found_invalid_rows = []
+        found_valid_rows = []
+        for _, row in new_df.iterrows():
+            ln = str(row['LineName']).strip()
+            mp = str(row['MaleParent']).strip() if pd.notna(row['MaleParent']) else ''
+            fp = str(row['FemaleParent']).strip() if pd.notna(row['FemaleParent']) else ''
+            if ln == '':
+                continue
+            male_ok = (mp == '') or (mp in existing_lines)
+            female_ok = (fp == '') or (fp in existing_lines)
+            if male_ok and female_ok:
+                found_valid_rows.append(row.to_dict())
+            else:
+                found_invalid_rows.append(row.to_dict())
+
+        msg = f"Uploaded {filename}. Valid: {len(found_valid_rows)}; Invalid: {len(found_invalid_rows)}."
+        # In this branch we are not yet updating the main dataset.
+        return (found_invalid_rows, found_valid_rows, msg, dash.no_update)
+
+    # Branch for saving corrections
+    elif triggered_id == 'add-ped-save-corrections-btn':
+        if not invalid_rows:
+            return dash.no_update, dash.no_update, "No invalid rows to correct.", dash.no_update
+
+        # Apply corrections from the dropdown inputs
+        for i, row_dict in enumerate(invalid_rows):
+            corrected_male = male_values[i] or ''
+            corrected_female = female_values[i] or ''
+            row_dict['MaleParent'] = corrected_male
+            row_dict['FemaleParent'] = corrected_female
+
+        updated_valid_rows = valid_rows + invalid_rows
+
+        # Create a DataFrame from the new entries and update the global dataset
+        new_entries_df = pd.DataFrame(updated_valid_rows)
+        df = pd.concat([df, new_entries_df], ignore_index=True)
+
+        # Update the dcc.Store by converting the updated DataFrame to a dict of records
+        updated_store = df.to_dict('records')
+        return ([], updated_valid_rows, "Corrections saved successfully!", updated_store)
+
+    else:
+        raise PreventUpdate
 
 
 #endregion
 
 
 
+@app.callback(
+    Output('download-subset-link', 'href'),
+    [Input('subset-dropdown', 'value')]
+)
+def update_subset_matrix_download_link(subset_values):
+    if not subset_values or current_amatrix is None:
+        return dash.no_update
+    subset_amatrix = current_amatrix.loc[subset_values, subset_values]
+    file_name = f"subset_matrix_{int(time.time())}.csv"
+    file_path = os.path.join(OUTPUT_DIR, file_name)
+    subset_amatrix.to_csv(file_path)
+    safe_filename_subset = urllib.parse.quote(file_path)
+    return f'/download?filename={safe_filename_subset}&type=subset'
 
 
 @app.callback(
@@ -2761,7 +2780,7 @@ def generate_combined_family_tree(n_clicks, line1, line2):
 
     relatives_df = filtered_df[filtered_df['LineName'].isin(all_lines)]
     dot = graphviz.Digraph(comment='Combined Family Tree')
-    dot.attr('node', shape='ellipse', style='filled', fontname="Arial Bold")
+    dot.attr('node', shape='ellipse', style='filled')
 
     for _, row in relatives_df.iterrows():
         ln = row['LineName']
@@ -2793,35 +2812,6 @@ def generate_combined_family_tree(n_clicks, line1, line2):
     tree_src = f'data:image/png;base64,{encoded_tree}'
 
     return html.Img(src=tree_src, style=CUSTOM_CSS['image'])
-
-def collect_lines_with_ancestors_only(selected_lines, df):
-    """
-    Return selected lines + all ancestors (parents, grandparents, etc.)
-    using fast iterative BFS. No descendants included.
-    """
-    ancestors = set()
-    queue = list(selected_lines)
-
-    # Pre-index for fast lookup (matches your style)
-    parent_lookup = df.set_index('LineName')[['MaleParent', 'FemaleParent']]
-
-    while queue:
-        line = queue.pop(0)
-
-        # Skip if line not in table
-        if line not in parent_lookup.index:
-            continue
-
-        male = parent_lookup.loc[line, 'MaleParent']
-        female = parent_lookup.loc[line, 'FemaleParent']
-
-        # BFS upward
-        for parent in (male, female):
-            if pd.notna(parent) and parent not in ancestors:
-                ancestors.add(parent)
-                queue.append(parent)
-
-    return set(selected_lines).union(ancestors)
 
 
 @app.callback(
@@ -2963,25 +2953,6 @@ def upload_file(contents, filename, last_modified):
     except Exception as e:
         print(e)
         return "There was an error processing the file"
-
-@server.route("/download")
-def download():
-    filename = request.args.get("filename")
-    file_type = request.args.get("type")
-
-    if not filename or not file_type:
-        return "Missing parameters", 400
-
-    if file_type == "full":
-        return send_file(filename, as_attachment=True)
-
-    if file_type == "subset":
-        return send_file(filename, as_attachment=True)
-
-    if file_type == "image":
-        return send_file(filename, mimetype="image/png")
-
-    return "Invalid file type", 400
 
 
 if __name__ == '__main__':
