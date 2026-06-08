@@ -464,11 +464,8 @@ def trace_direct_ancestor_chain(line_name: str, source_df: pd.DataFrame, parent_
     """
     Follow only one direct parental side until it terminates.
 
-    MaleParent:
-        genotype -> MaleParent -> MaleParent -> MaleParent ... oldest direct male ancestor
-
-    FemaleParent:
-        genotype -> FemaleParent -> FemaleParent -> FemaleParent ... oldest direct female ancestor
+    For parent_col='MaleParent', this gives sire -> sire's sire -> sire's sire's sire, etc.
+    For parent_col='FemaleParent', this gives dam -> dam's dam -> dam's dam's dam, etc.
     """
     lookup = source_df.set_index("LineName", drop=False)
     current = str(line_name).strip()
@@ -477,26 +474,21 @@ def trace_direct_ancestor_chain(line_name: str, source_df: pd.DataFrame, parent_
 
     if current not in lookup.index:
         return {
-            "OldestAncestor": "",
+            "FurthestAncestor": "",
             "Depth": 0,
             "Path": current,
             "Status": "Input genotype not found in pedigree",
         }
 
     status = "Reached recorded founder / missing parent"
-
     while True:
         row = lookup.loc[current]
-
         if isinstance(row, pd.DataFrame):
             row = row.iloc[0]
-
         parent = clean_parent_value(row.get(parent_col))
-
         if not parent:
             status = "Reached recorded founder / missing parent"
             break
-
         if parent in visited:
             path.append(parent)
             status = "Stopped at cycle"
@@ -504,22 +496,20 @@ def trace_direct_ancestor_chain(line_name: str, source_df: pd.DataFrame, parent_
 
         path.append(parent)
         visited.add(parent)
-
         if parent not in lookup.index:
             status = "Stopped at referenced ancestor not present as a LineName row"
             break
-
         current = parent
 
     if len(path) == 1:
-        oldest = ""
+        furthest = ""
         depth = 0
     else:
-        oldest = path[-1]
+        furthest = path[-1]
         depth = len(path) - 1
 
     return {
-        "OldestAncestor": oldest,
+        "FurthestAncestor": furthest,
         "Depth": depth,
         "Path": " → ".join(path),
         "Status": status,
@@ -527,248 +517,28 @@ def trace_direct_ancestor_chain(line_name: str, source_df: pd.DataFrame, parent_
 
 
 def direct_line_ancestor_table(genotypes: list[str], source_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Build a table with only ONE row per genotype.
-
-    It returns only:
-      - oldest/final direct female-line ancestor
-      - oldest/final direct male-line ancestor
-
-    It does NOT return every terminal ancestor from every branch.
-    """
+    """Build a table of furthest direct male and female ancestors for pasted genotypes."""
     available = set(source_df["LineName"].astype(str).tolist())
     rows = []
-
     for genotype in genotypes:
-        genotype = str(genotype).strip()
-
-        female = trace_direct_ancestor_chain(genotype, source_df, "FemaleParent")
         male = trace_direct_ancestor_chain(genotype, source_df, "MaleParent")
-
-        # Handles either key name, depending on which trace function version is in your file.
-        female_ancestor = female.get("FurthestAncestor", female.get("OldestAncestor", ""))
-        male_ancestor = male.get("FurthestAncestor", male.get("OldestAncestor", ""))
-
+        female = trace_direct_ancestor_chain(genotype, source_df, "FemaleParent")
         rows.append(
             {
                 "Genotype": genotype,
                 "FoundInPedigree": genotype in available,
-
-                "FurthestDirectFemaleAncestor": female_ancestor,
-                "DirectFemaleDepth": female.get("Depth", 0),
-                "DirectFemaleStatus": female.get("Status", ""),
-                "DirectFemalePath": female.get("Path", ""),
-
-                "FurthestDirectMaleAncestor": male_ancestor,
-                "DirectMaleDepth": male.get("Depth", 0),
-                "DirectMaleStatus": male.get("Status", ""),
-                "DirectMalePath": male.get("Path", ""),
+                "FurthestDirectMaleAncestor": male["FurthestAncestor"],
+                "DirectMaleDepth": male["Depth"],
+                "DirectMalePath": male["Path"],
+                "DirectMaleStatus": male["Status"],
+                "FurthestDirectFemaleAncestor": female["FurthestAncestor"],
+                "DirectFemaleDepth": female["Depth"],
+                "DirectFemalePath": female["Path"],
+                "DirectFemaleStatus": female["Status"],
             }
         )
-
     return pd.DataFrame(rows)
 
-
-
-
-def terminal_branch_ancestor_table(genotypes: list[str], source_df: pd.DataFrame, max_depth: int = 12) -> pd.DataFrame:
-    """
-    For each input genotype, collect terminal/founder ancestors separately from
-    the recorded MaleParent branch and FemaleParent branch.
-
-    Output is intentionally long-format: one row per terminal ancestor path.
-    This is easier to filter/summarize for cytoplasmic/chloroplast inheritance
-    checks than a very wide table with an unknown number of terminals.
-    """
-    max_depth = int(max(1, min(max_depth or 12, 30)))
-    parent_lookup = build_parent_lookup(source_df)
-    available = set(source_df["LineName"].astype(str).tolist())
-    branch_specs = [
-        ("MaleParent", "Male branch from input", 0),
-        ("FemaleParent", "Female branch from input", 1),
-    ]
-    rows: list[dict[str, object]] = []
-
-    def add_terminal_row(
-        genotype: str,
-        found: bool,
-        branch_col: str,
-        branch_label: str,
-        starting_parent: str | None,
-        terminal: str | None,
-        depth: int,
-        path_names: list[str],
-        path_slots: list[str],
-        status: str,
-    ):
-        terminal = terminal or ""
-        rows.append(
-            {
-                "Genotype": genotype,
-                "FoundInPedigree": bool(found),
-                "BranchFromInput": branch_label,
-                "BranchParentColumn": branch_col,
-                "StartingParent": starting_parent or "",
-                "TerminalAncestor": terminal,
-                "TerminalAncestorFoundAsLineName": bool(terminal in available) if terminal else False,
-                "TerminalDepthFromInput": int(depth),
-                "TerminalReachedThroughParentSlot": path_slots[-1] if path_slots else "",
-                "AllMaleParentPath": bool(path_slots) and all(slot == "MaleParent" for slot in path_slots),
-                "AllFemaleParentPath": bool(path_slots) and all(slot == "FemaleParent" for slot in path_slots),
-                "LikelyChloroplastLineageTerminal": bool(path_slots) and all(slot == "FemaleParent" for slot in path_slots),
-                "PathParentSlots": " → ".join(path_slots),
-                "PathLineNames": " → ".join(path_names),
-                "Status": status,
-            }
-        )
-
-    for raw_genotype in genotypes:
-        genotype = str(raw_genotype).strip()
-        found = genotype in available
-        if not found:
-            for branch_col, branch_label, _ in branch_specs:
-                add_terminal_row(
-                    genotype=genotype,
-                    found=False,
-                    branch_col=branch_col,
-                    branch_label=branch_label,
-                    starting_parent=None,
-                    terminal=None,
-                    depth=0,
-                    path_names=[genotype],
-                    path_slots=[],
-                    status="Input genotype not found in active pedigree",
-                )
-            continue
-
-        male_parent, female_parent = parent_lookup.get(genotype, (None, None))
-        start_parents = {"MaleParent": male_parent, "FemaleParent": female_parent}
-
-        for branch_col, branch_label, _ in branch_specs:
-            start_parent = start_parents.get(branch_col)
-            if not start_parent:
-                add_terminal_row(
-                    genotype=genotype,
-                    found=True,
-                    branch_col=branch_col,
-                    branch_label=branch_label,
-                    starting_parent=None,
-                    terminal=None,
-                    depth=0,
-                    path_names=[genotype],
-                    path_slots=[],
-                    status=f"No recorded {branch_col} for input genotype",
-                )
-                continue
-
-            stack: list[tuple[str, list[str], list[str], set[str]]] = [
-                (start_parent, [genotype, start_parent], [branch_col], {genotype, start_parent})
-            ]
-            branch_row_count = 0
-
-            while stack:
-                current, path_names, path_slots, visited = stack.pop()
-                depth = len(path_slots)
-                branch_row_count += 1
-
-                if depth >= max_depth:
-                    add_terminal_row(
-                        genotype=genotype,
-                        found=True,
-                        branch_col=branch_col,
-                        branch_label=branch_label,
-                        starting_parent=start_parent,
-                        terminal=current,
-                        depth=depth,
-                        path_names=path_names,
-                        path_slots=path_slots,
-                        status="Stopped at max search depth",
-                    )
-                    continue
-
-                if current not in available:
-                    add_terminal_row(
-                        genotype=genotype,
-                        found=True,
-                        branch_col=branch_col,
-                        branch_label=branch_label,
-                        starting_parent=start_parent,
-                        terminal=current,
-                        depth=depth,
-                        path_names=path_names,
-                        path_slots=path_slots,
-                        status="Terminal referenced ancestor not present as LineName row",
-                    )
-                    continue
-
-                current_male, current_female = parent_lookup.get(current, (None, None))
-                next_parents = [("FemaleParent", current_female), ("MaleParent", current_male)]
-                valid_next = [(slot, parent) for slot, parent in next_parents if parent]
-
-                if not valid_next:
-                    add_terminal_row(
-                        genotype=genotype,
-                        found=True,
-                        branch_col=branch_col,
-                        branch_label=branch_label,
-                        starting_parent=start_parent,
-                        terminal=current,
-                        depth=depth,
-                        path_names=path_names,
-                        path_slots=path_slots,
-                        status="Recorded terminal founder / no known parents",
-                    )
-                    continue
-
-                for slot, parent in reversed(valid_next):
-                    if parent in visited:
-                        add_terminal_row(
-                            genotype=genotype,
-                            found=True,
-                            branch_col=branch_col,
-                            branch_label=branch_label,
-                            starting_parent=start_parent,
-                            terminal=parent,
-                            depth=depth + 1,
-                            path_names=path_names + [parent],
-                            path_slots=path_slots + [slot],
-                            status="Stopped at pedigree cycle",
-                        )
-                    else:
-                        stack.append((parent, path_names + [parent], path_slots + [slot], set(visited) | {parent}))
-
-            if branch_row_count == 0:
-                add_terminal_row(
-                    genotype=genotype,
-                    found=True,
-                    branch_col=branch_col,
-                    branch_label=branch_label,
-                    starting_parent=start_parent,
-                    terminal=start_parent,
-                    depth=1,
-                    path_names=[genotype, start_parent],
-                    path_slots=[branch_col],
-                    status="No branch rows generated",
-                )
-
-    columns = [
-        "Genotype",
-        "FoundInPedigree",
-        "BranchFromInput",
-        "BranchParentColumn",
-        "StartingParent",
-        "TerminalAncestor",
-        "TerminalAncestorFoundAsLineName",
-        "TerminalDepthFromInput",
-        "TerminalReachedThroughParentSlot",
-        "AllMaleParentPath",
-        "AllFemaleParentPath",
-        "LikelyChloroplastLineageTerminal",
-        "PathParentSlots",
-        "PathLineNames",
-        "Status",
-    ]
-    return pd.DataFrame(rows, columns=columns)
 
 def collect_selected_only(selected_lines: Iterable[str], source_df: pd.DataFrame) -> set[str]:
     valid = set(source_df["LineName"].astype(str).tolist())
@@ -1260,29 +1030,11 @@ def build_pedigree_fan_rows(selected_line: str, source_df: pd.DataFrame, max_dep
     return fan_df
 
 
-def wrap_fan_label(label: str, large_export: bool = False) -> str:
-    """Insert line breaks so long variety names use wedge space more efficiently."""
-    if label is None:
-        return ""
-    label = str(label)
-    if label.startswith("Unknown "):
-        return label.replace(" ", "<br>", 1)
-    if large_export:
-        # For export, use more vertical space inside wedges.
-        label = re.sub(r"(?<=\D)(?=\d)", "<br>", label, count=1)
-        label = label.replace("-", "-<br>")
-        if "<br>" not in label and len(label) > 10:
-            mid = len(label) // 2
-            label = label[:mid] + "<br>" + label[mid:]
-    return label
-
-
 def pedigree_fan_chart_figure(selected_line: str, max_depth: int, large_export: bool = False):
     """Circular pedigree wheel/fan chart, closer to published ancestry-ring visuals.
 
     The on-screen figure is allowed to hide tiny labels so it stays readable.
-    The export version is more compact and text-forward so labels occupy more
-    of each wedge and the result looks more presentable.
+    The large export forces labels to show and uses a much larger canvas.
     """
     fan_df = build_pedigree_fan_rows(selected_line, filtered_df, max_depth)
     if fan_df.empty:
@@ -1320,8 +1072,7 @@ def pedigree_fan_chart_figure(selected_line: str, max_depth: int, large_export: 
         return "#111111"
 
     text_colors = [label_color(row) for _, row in fan_df.iterrows()]
-    labels = [wrap_fan_label(lbl, large_export=large_export) for lbl in fan_df["label"]]
-    text_size = 20 if large_export else 10
+    text_size = 14 if large_export else 10
 
     customdata = np.stack(
         [
@@ -1333,7 +1084,6 @@ def pedigree_fan_chart_figure(selected_line: str, max_depth: int, large_export: 
             fan_df["slot_contribution_pct"].round(3).astype(str),
             fan_df["total_contribution_pct"].round(3).astype(str),
             fan_df["total_slots_for_line"].astype(str),
-            fan_df["label"].astype(str),
         ],
         axis=-1,
     )
@@ -1341,7 +1091,7 @@ def pedigree_fan_chart_figure(selected_line: str, max_depth: int, large_export: 
     fig = go.Figure(
         go.Sunburst(
             ids=fan_df["id"],
-            labels=labels,
+            labels=fan_df["label"],
             parents=fan_df["parent"],
             values=fan_df["value"],
             branchvalues="total",
@@ -1350,10 +1100,10 @@ def pedigree_fan_chart_figure(selected_line: str, max_depth: int, large_export: 
             textinfo="label",
             textfont={"color": text_colors, "size": text_size},
             insidetextfont={"color": text_colors, "size": text_size},
-            marker={"colors": colors, "line": {"color": "white", "width": 0.8 if large_export else 1.2}},
+            marker={"colors": colors, "line": {"color": "white", "width": 1.2}},
             customdata=customdata,
             hovertemplate=(
-                "Line/slot: %{customdata[8]}<br>"
+                "Line/slot: %{label}<br>"
                 "Generation: %{customdata[0]}<br>"
                 "Role: %{customdata[1]}<br>"
                 "Major branch: %{customdata[2]}<br>"
@@ -1367,13 +1117,12 @@ def pedigree_fan_chart_figure(selected_line: str, max_depth: int, large_export: 
         )
     )
 
-    export_size = max(1350, int(max_depth) * 185)
     fig.update_layout(
         title=f"Pedigree fan chart for {selected_line}" + (" — full-label export" if large_export else ""),
-        height=export_size if large_export else 850,
-        width=export_size if large_export else None,
-        margin={"l": 18, "r": 18, "t": 90, "b": 50} if large_export else {"l": 10, "r": 10, "t": 75, "b": 35},
-        uniformtext={"minsize": 14 if large_export else 8, "mode": "show" if large_export else "hide"},
+        height=max(1700, int(max_depth) * 260) if large_export else 850,
+        width=max(1700, int(max_depth) * 260) if large_export else None,
+        margin={"l": 20, "r": 20, "t": 95, "b": 55} if large_export else {"l": 10, "r": 10, "t": 75, "b": 35},
+        uniformtext={"minsize": 10 if large_export else 8, "mode": "show" if large_export else "hide"},
         annotations=[
             {
                 "text": "Warm = female-side branch • Cool = male-side branch • Purple = repeated ancestor • Gray = unknown branch • Red text = female parent slot • Blue text = male parent slot",
@@ -1951,7 +1700,6 @@ def pedigree_explorer_layout():
                         {"label": "Group / era / founder insights", "value": "group-era-insights"},
                         {"label": "Ancestor contribution chart", "value": "ancestor-contribution"},
                         {"label": "Furthest direct male/female ancestors", "value": "direct-line-ancestors"},
-                        {"label": "Terminal ancestors by male/female branch", "value": "terminal-branch-ancestors"},
                     ],
                     multi=True,
                     placeholder="Select one or more functions",
@@ -2735,62 +2483,6 @@ def display_selected_progeny_modules(selected_functions):
             )
         )
 
-
-
-    if "terminal-branch-ancestors" in selected_functions:
-        modules.append(
-            dbc.Card(
-                dbc.CardBody(
-                    [
-                        html.H4("Terminal ancestors by male/female branch"),
-                        html.P(
-                            "Paste genotype names and the app will return every terminal/founder ancestor path found separately "
-                            "from the input genotype's MaleParent branch and FemaleParent branch. The output is long-format "
-                            "so it can be analyzed for cytoplasmic/chloroplast inheritance. Rows where AllFemaleParentPath is TRUE "
-                            "are the direct maternal-line candidates."
-                        ),
-                        dcc.Textarea(
-                            id="terminal-branch-genotype-input",
-                            placeholder="Examples:\nL01-299\nHoCP96-540\nLCP85-384",
-                            style={"width": "100%", "height": "140px"},
-                        ),
-                        html.Br(),
-                        dbc.Row(
-                            [
-                                dbc.Col(
-                                    [
-                                        html.Label("Max generations to search", style={"fontWeight": "bold"}),
-                                        dcc.Input(
-                                            id="terminal-branch-max-depth",
-                                            type="number",
-                                            min=1,
-                                            max=30,
-                                            step=1,
-                                            value=12,
-                                            style={"width": "100%"},
-                                        ),
-                                    ],
-                                    width=3,
-                                ),
-                            ]
-                        ),
-                        html.Br(),
-                        html.Button("Find Terminal Branch Ancestors", id="generate-terminal-branch-ancestors-button", style=CUSTOM_CSS["button"]),
-                        html.Div(id="terminal-branch-ancestors-summary", style={"fontWeight": "bold", "marginTop": "10px"}),
-                        html.A(
-                            "Download Terminal Branch Ancestor CSV",
-                            id="download-terminal-branch-ancestors-link",
-                            href="",
-                            className="btn btn-success",
-                            style={**CUSTOM_CSS["button"], "display": "none"},
-                        ),
-                        html.Div(id="terminal-branch-ancestors-table", style=CUSTOM_CSS["table_wrap"]),
-                    ]
-                ),
-                className="mb-3",
-            )
-        )
-
     return modules
 
 
@@ -2881,72 +2573,6 @@ def generate_direct_line_ancestor_lookup(n_clicks, genotype_text):
         "DirectFemalePath",
     ]
     return summary, dataframe_to_dash_table(result_df[display_cols], max_rows=150), href, visible_style
-
-
-
-@app.callback(
-    [
-        Output("terminal-branch-ancestors-summary", "children"),
-        Output("terminal-branch-ancestors-table", "children"),
-        Output("download-terminal-branch-ancestors-link", "href"),
-        Output("download-terminal-branch-ancestors-link", "style"),
-    ],
-    Input("generate-terminal-branch-ancestors-button", "n_clicks"),
-    [State("terminal-branch-genotype-input", "value"), State("terminal-branch-max-depth", "value")],
-    prevent_initial_call=True,
-)
-def generate_terminal_branch_ancestor_lookup(n_clicks, genotype_text, max_depth):
-    if not n_clicks:
-        raise PreventUpdate
-
-    genotypes = parse_user_genotype_list(genotype_text or "")
-    hidden_style = {**CUSTOM_CSS["button"], "display": "none"}
-    visible_style = {**CUSTOM_CSS["button"], "display": "inline-block"}
-
-    if not genotypes:
-        return "Paste at least one genotype name.", "", "", hidden_style
-
-    # IMPORTANT:
-    # This intentionally uses the direct-line function, NOT terminal_branch_ancestor_table.
-    # It returns one row per genotype:
-    #   genotype -> FemaleParent -> FemaleParent -> ... oldest direct female ancestor
-    #   genotype -> MaleParent   -> MaleParent   -> ... oldest direct male ancestor
-    result_df = direct_line_ancestor_table(genotypes, df)
-
-    found_n = int(result_df["FoundInPedigree"].sum()) if not result_df.empty else 0
-
-    file_name = f"oldest_direct_male_female_ancestors_{int(time.time())}.csv"
-    file_path = OUTPUT_DIR / file_name
-    result_df.to_csv(file_path, index=False)
-
-    href = f"/download?filename={urllib.parse.quote(str(file_path))}&type=csv"
-
-    summary = (
-        f"Processed {len(result_df):,} input genotypes; "
-        f"{found_n:,} were found in the active pedigree. "
-        "This table returns only the oldest direct female-line ancestor and "
-        "oldest direct male-line ancestor for each genotype."
-    )
-
-    display_cols = [
-        "Genotype",
-        "FoundInPedigree",
-        "FurthestDirectFemaleAncestor",
-        "DirectFemaleDepth",
-        "FurthestDirectMaleAncestor",
-        "DirectMaleDepth",
-        "DirectFemaleStatus",
-        "DirectMaleStatus",
-        "DirectFemalePath",
-        "DirectMalePath",
-    ]
-
-    return (
-        summary,
-        dataframe_to_dash_table(result_df[display_cols], max_rows=200),
-        href,
-        visible_style,
-    )
 
 
 @app.callback(

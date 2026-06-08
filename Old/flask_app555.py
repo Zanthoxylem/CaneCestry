@@ -9,7 +9,7 @@ Fixed version generated from the uploaded app:
 - Fixed uploaded pedigree persistence path: pedigree/user_input/pedigree.txt.
 - Add-pedigree upload now appends valid rows and recalculates the active filtered dataframe.
 - Family-tree male/female lineage highlighting now combines styles instead of overwriting them.
-- Added matrix PCA/MDS ordination, group/era insights, founder-origin summaries, ancestor contribution plots, Cytoscape interactive viewer, a pedigree fan-chart generation ring layout, direct-line ancestor lookup, high-resolution visualization exports, fan-chart sex-colored labels, and flippable family-tree orientation.
+- Added matrix PCA/MDS ordination, group/era insights, founder-origin summaries, ancestor contribution plots, Cytoscape interactive viewer, and a pedigree fan-chart generation ring layout.
 """
 
 from __future__ import annotations
@@ -131,22 +131,6 @@ CUSTOM_CSS = {
     },
 }
 
-HIGHRES_GRAPH_CONFIG = {
-    "displaylogo": False,
-    "toImageButtonOptions": {
-        "format": "png",
-        "filename": "canecestry_visualization_highres",
-        "height": 2200,
-        "width": 2200,
-        "scale": 3,
-    },
-}
-
-DOWNLOAD_BUTTON_STYLE = {
-    "margin": "6px",
-    "fontWeight": "bold",
-}
-
 # =============================================================================
 # Data loading and active dataframe management
 # =============================================================================
@@ -263,16 +247,6 @@ def line_options(source_df: Optional[pd.DataFrame] = None) -> list[dict[str, str
 # =============================================================================
 
 
-def safe_file_stem(value: str, fallback: str = "canecestry_export") -> str:
-    """Make a short filesystem-safe stem for exported visualizations."""
-    value = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or fallback)).strip("_")
-    return value[:90] or fallback
-
-
-def download_href(path: Path | str, file_type: str = "download") -> str:
-    return f"/download?filename={urllib.parse.quote(str(path))}&type={file_type}"
-
-
 def graphviz_to_svg_img(dot: graphviz.Digraph, max_height: str = "900px") -> html.Img:
     """Return a crisp SVG Graphviz image for Dash."""
     dot.attr("graph", bgcolor="transparent")
@@ -282,56 +256,6 @@ def graphviz_to_svg_img(dot: graphviz.Digraph, max_height: str = "900px") -> htm
         src=f"data:image/svg+xml;base64,{encoded_svg}",
         style={**CUSTOM_CSS["tree_image"], "maxHeight": max_height, "objectFit": "contain"},
     )
-
-
-def graphviz_visualization_block(dot: graphviz.Digraph, stem: str, max_height: str = "900px") -> html.Div:
-    """Render a tree/DAG plus high-resolution downloads.
-
-    SVG/PDF are vector exports and are the best choices for huge pedigrees.
-    The PNG export is rendered at high DPI for quick presentation use.
-    """
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    stem = safe_file_stem(stem)
-    timestamp = int(time.time() * 1000)
-
-    dot.attr("graph", bgcolor="transparent")
-    svg_bytes = dot.pipe(format="svg")
-    svg_path = OUTPUT_DIR / f"{stem}_{timestamp}.svg"
-    svg_path.write_bytes(svg_bytes)
-
-    export_links = [
-        html.A("Download editable SVG", href=download_href(svg_path, "svg"), download=svg_path.name, className="btn btn-success", style=DOWNLOAD_BUTTON_STYLE),
-    ]
-
-    try:
-        pdf_path = OUTPUT_DIR / f"{stem}_{timestamp}.pdf"
-        pdf_path.write_bytes(dot.pipe(format="pdf"))
-        export_links.append(html.A("Download PDF", href=download_href(pdf_path, "pdf"), download=pdf_path.name, className="btn btn-secondary", style=DOWNLOAD_BUTTON_STYLE))
-    except Exception as exc:
-        export_links.append(html.Span(f"PDF export unavailable: {exc}", style={"marginLeft": "8px", "color": "#777"}))
-
-    try:
-        # DPI affects raster PNG output only. SVG/PDF above stay vector/crisp regardless of zoom.
-        dot.attr("graph", dpi="500")
-        png_path = OUTPUT_DIR / f"{stem}_{timestamp}_large.png"
-        png_path.write_bytes(dot.pipe(format="png"))
-        export_links.append(html.A("Download large PNG", href=download_href(png_path, "png_download"), download=png_path.name, className="btn btn-warning", style=DOWNLOAD_BUTTON_STYLE))
-    except Exception as exc:
-        export_links.append(html.Span(f"PNG export unavailable: {exc}", style={"marginLeft": "8px", "color": "#777"}))
-
-    encoded_svg = base64.b64encode(svg_bytes).decode("utf-8")
-    preview = html.Img(
-        src=f"data:image/svg+xml;base64,{encoded_svg}",
-        style={**CUSTOM_CSS["tree_image"], "maxHeight": max_height, "objectFit": "contain"},
-    )
-    return html.Div([html.Div(export_links, style={"marginTop": "8px", "marginBottom": "8px"}), preview])
-
-
-def save_plotly_html(fig: go.Figure, stem: str) -> Path:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    path = OUTPUT_DIR / f"{safe_file_stem(stem)}_{int(time.time() * 1000)}.html"
-    fig.write_html(str(path), include_plotlyjs=True, config=HIGHRES_GRAPH_CONFIG, full_html=True)
-    return path
 
 
 def normalize_style(*parts: str) -> str:
@@ -445,330 +369,6 @@ def get_direct_line(line_name: str, source_df: pd.DataFrame, parent_col: str) ->
         current = parent
     return collected
 
-
-def parse_user_genotype_list(text: str) -> list[str]:
-    """Parse a pasted genotype list separated by newlines, commas, semicolons, or tabs."""
-    if not text:
-        return []
-    seen: set[str] = set()
-    genotypes: list[str] = []
-    for chunk in re.split(r"[,;\n\t]+", str(text)):
-        name = chunk.strip()
-        if name and name not in seen:
-            seen.add(name)
-            genotypes.append(name)
-    return genotypes
-
-
-def trace_direct_ancestor_chain(line_name: str, source_df: pd.DataFrame, parent_col: str) -> dict[str, object]:
-    """
-    Follow only one direct parental side until it terminates.
-
-    MaleParent:
-        genotype -> MaleParent -> MaleParent -> MaleParent ... oldest direct male ancestor
-
-    FemaleParent:
-        genotype -> FemaleParent -> FemaleParent -> FemaleParent ... oldest direct female ancestor
-    """
-    lookup = source_df.set_index("LineName", drop=False)
-    current = str(line_name).strip()
-    path = [current]
-    visited = {current}
-
-    if current not in lookup.index:
-        return {
-            "OldestAncestor": "",
-            "Depth": 0,
-            "Path": current,
-            "Status": "Input genotype not found in pedigree",
-        }
-
-    status = "Reached recorded founder / missing parent"
-
-    while True:
-        row = lookup.loc[current]
-
-        if isinstance(row, pd.DataFrame):
-            row = row.iloc[0]
-
-        parent = clean_parent_value(row.get(parent_col))
-
-        if not parent:
-            status = "Reached recorded founder / missing parent"
-            break
-
-        if parent in visited:
-            path.append(parent)
-            status = "Stopped at cycle"
-            break
-
-        path.append(parent)
-        visited.add(parent)
-
-        if parent not in lookup.index:
-            status = "Stopped at referenced ancestor not present as a LineName row"
-            break
-
-        current = parent
-
-    if len(path) == 1:
-        oldest = ""
-        depth = 0
-    else:
-        oldest = path[-1]
-        depth = len(path) - 1
-
-    return {
-        "OldestAncestor": oldest,
-        "Depth": depth,
-        "Path": " → ".join(path),
-        "Status": status,
-    }
-
-
-def direct_line_ancestor_table(genotypes: list[str], source_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Build a table with only ONE row per genotype.
-
-    It returns only:
-      - oldest/final direct female-line ancestor
-      - oldest/final direct male-line ancestor
-
-    It does NOT return every terminal ancestor from every branch.
-    """
-    available = set(source_df["LineName"].astype(str).tolist())
-    rows = []
-
-    for genotype in genotypes:
-        genotype = str(genotype).strip()
-
-        female = trace_direct_ancestor_chain(genotype, source_df, "FemaleParent")
-        male = trace_direct_ancestor_chain(genotype, source_df, "MaleParent")
-
-        # Handles either key name, depending on which trace function version is in your file.
-        female_ancestor = female.get("FurthestAncestor", female.get("OldestAncestor", ""))
-        male_ancestor = male.get("FurthestAncestor", male.get("OldestAncestor", ""))
-
-        rows.append(
-            {
-                "Genotype": genotype,
-                "FoundInPedigree": genotype in available,
-
-                "FurthestDirectFemaleAncestor": female_ancestor,
-                "DirectFemaleDepth": female.get("Depth", 0),
-                "DirectFemaleStatus": female.get("Status", ""),
-                "DirectFemalePath": female.get("Path", ""),
-
-                "FurthestDirectMaleAncestor": male_ancestor,
-                "DirectMaleDepth": male.get("Depth", 0),
-                "DirectMaleStatus": male.get("Status", ""),
-                "DirectMalePath": male.get("Path", ""),
-            }
-        )
-
-    return pd.DataFrame(rows)
-
-
-
-
-def terminal_branch_ancestor_table(genotypes: list[str], source_df: pd.DataFrame, max_depth: int = 12) -> pd.DataFrame:
-    """
-    For each input genotype, collect terminal/founder ancestors separately from
-    the recorded MaleParent branch and FemaleParent branch.
-
-    Output is intentionally long-format: one row per terminal ancestor path.
-    This is easier to filter/summarize for cytoplasmic/chloroplast inheritance
-    checks than a very wide table with an unknown number of terminals.
-    """
-    max_depth = int(max(1, min(max_depth or 12, 30)))
-    parent_lookup = build_parent_lookup(source_df)
-    available = set(source_df["LineName"].astype(str).tolist())
-    branch_specs = [
-        ("MaleParent", "Male branch from input", 0),
-        ("FemaleParent", "Female branch from input", 1),
-    ]
-    rows: list[dict[str, object]] = []
-
-    def add_terminal_row(
-        genotype: str,
-        found: bool,
-        branch_col: str,
-        branch_label: str,
-        starting_parent: str | None,
-        terminal: str | None,
-        depth: int,
-        path_names: list[str],
-        path_slots: list[str],
-        status: str,
-    ):
-        terminal = terminal or ""
-        rows.append(
-            {
-                "Genotype": genotype,
-                "FoundInPedigree": bool(found),
-                "BranchFromInput": branch_label,
-                "BranchParentColumn": branch_col,
-                "StartingParent": starting_parent or "",
-                "TerminalAncestor": terminal,
-                "TerminalAncestorFoundAsLineName": bool(terminal in available) if terminal else False,
-                "TerminalDepthFromInput": int(depth),
-                "TerminalReachedThroughParentSlot": path_slots[-1] if path_slots else "",
-                "AllMaleParentPath": bool(path_slots) and all(slot == "MaleParent" for slot in path_slots),
-                "AllFemaleParentPath": bool(path_slots) and all(slot == "FemaleParent" for slot in path_slots),
-                "LikelyChloroplastLineageTerminal": bool(path_slots) and all(slot == "FemaleParent" for slot in path_slots),
-                "PathParentSlots": " → ".join(path_slots),
-                "PathLineNames": " → ".join(path_names),
-                "Status": status,
-            }
-        )
-
-    for raw_genotype in genotypes:
-        genotype = str(raw_genotype).strip()
-        found = genotype in available
-        if not found:
-            for branch_col, branch_label, _ in branch_specs:
-                add_terminal_row(
-                    genotype=genotype,
-                    found=False,
-                    branch_col=branch_col,
-                    branch_label=branch_label,
-                    starting_parent=None,
-                    terminal=None,
-                    depth=0,
-                    path_names=[genotype],
-                    path_slots=[],
-                    status="Input genotype not found in active pedigree",
-                )
-            continue
-
-        male_parent, female_parent = parent_lookup.get(genotype, (None, None))
-        start_parents = {"MaleParent": male_parent, "FemaleParent": female_parent}
-
-        for branch_col, branch_label, _ in branch_specs:
-            start_parent = start_parents.get(branch_col)
-            if not start_parent:
-                add_terminal_row(
-                    genotype=genotype,
-                    found=True,
-                    branch_col=branch_col,
-                    branch_label=branch_label,
-                    starting_parent=None,
-                    terminal=None,
-                    depth=0,
-                    path_names=[genotype],
-                    path_slots=[],
-                    status=f"No recorded {branch_col} for input genotype",
-                )
-                continue
-
-            stack: list[tuple[str, list[str], list[str], set[str]]] = [
-                (start_parent, [genotype, start_parent], [branch_col], {genotype, start_parent})
-            ]
-            branch_row_count = 0
-
-            while stack:
-                current, path_names, path_slots, visited = stack.pop()
-                depth = len(path_slots)
-                branch_row_count += 1
-
-                if depth >= max_depth:
-                    add_terminal_row(
-                        genotype=genotype,
-                        found=True,
-                        branch_col=branch_col,
-                        branch_label=branch_label,
-                        starting_parent=start_parent,
-                        terminal=current,
-                        depth=depth,
-                        path_names=path_names,
-                        path_slots=path_slots,
-                        status="Stopped at max search depth",
-                    )
-                    continue
-
-                if current not in available:
-                    add_terminal_row(
-                        genotype=genotype,
-                        found=True,
-                        branch_col=branch_col,
-                        branch_label=branch_label,
-                        starting_parent=start_parent,
-                        terminal=current,
-                        depth=depth,
-                        path_names=path_names,
-                        path_slots=path_slots,
-                        status="Terminal referenced ancestor not present as LineName row",
-                    )
-                    continue
-
-                current_male, current_female = parent_lookup.get(current, (None, None))
-                next_parents = [("FemaleParent", current_female), ("MaleParent", current_male)]
-                valid_next = [(slot, parent) for slot, parent in next_parents if parent]
-
-                if not valid_next:
-                    add_terminal_row(
-                        genotype=genotype,
-                        found=True,
-                        branch_col=branch_col,
-                        branch_label=branch_label,
-                        starting_parent=start_parent,
-                        terminal=current,
-                        depth=depth,
-                        path_names=path_names,
-                        path_slots=path_slots,
-                        status="Recorded terminal founder / no known parents",
-                    )
-                    continue
-
-                for slot, parent in reversed(valid_next):
-                    if parent in visited:
-                        add_terminal_row(
-                            genotype=genotype,
-                            found=True,
-                            branch_col=branch_col,
-                            branch_label=branch_label,
-                            starting_parent=start_parent,
-                            terminal=parent,
-                            depth=depth + 1,
-                            path_names=path_names + [parent],
-                            path_slots=path_slots + [slot],
-                            status="Stopped at pedigree cycle",
-                        )
-                    else:
-                        stack.append((parent, path_names + [parent], path_slots + [slot], set(visited) | {parent}))
-
-            if branch_row_count == 0:
-                add_terminal_row(
-                    genotype=genotype,
-                    found=True,
-                    branch_col=branch_col,
-                    branch_label=branch_label,
-                    starting_parent=start_parent,
-                    terminal=start_parent,
-                    depth=1,
-                    path_names=[genotype, start_parent],
-                    path_slots=[branch_col],
-                    status="No branch rows generated",
-                )
-
-    columns = [
-        "Genotype",
-        "FoundInPedigree",
-        "BranchFromInput",
-        "BranchParentColumn",
-        "StartingParent",
-        "TerminalAncestor",
-        "TerminalAncestorFoundAsLineName",
-        "TerminalDepthFromInput",
-        "TerminalReachedThroughParentSlot",
-        "AllMaleParentPath",
-        "AllFemaleParentPath",
-        "LikelyChloroplastLineageTerminal",
-        "PathParentSlots",
-        "PathLineNames",
-        "Status",
-    ]
-    return pd.DataFrame(rows, columns=columns)
 
 def collect_selected_only(selected_lines: Iterable[str], source_df: pd.DataFrame) -> set[str]:
     valid = set(source_df["LineName"].astype(str).tolist())
@@ -1260,30 +860,8 @@ def build_pedigree_fan_rows(selected_line: str, source_df: pd.DataFrame, max_dep
     return fan_df
 
 
-def wrap_fan_label(label: str, large_export: bool = False) -> str:
-    """Insert line breaks so long variety names use wedge space more efficiently."""
-    if label is None:
-        return ""
-    label = str(label)
-    if label.startswith("Unknown "):
-        return label.replace(" ", "<br>", 1)
-    if large_export:
-        # For export, use more vertical space inside wedges.
-        label = re.sub(r"(?<=\D)(?=\d)", "<br>", label, count=1)
-        label = label.replace("-", "-<br>")
-        if "<br>" not in label and len(label) > 10:
-            mid = len(label) // 2
-            label = label[:mid] + "<br>" + label[mid:]
-    return label
-
-
-def pedigree_fan_chart_figure(selected_line: str, max_depth: int, large_export: bool = False):
-    """Circular pedigree wheel/fan chart, closer to published ancestry-ring visuals.
-
-    The on-screen figure is allowed to hide tiny labels so it stays readable.
-    The export version is more compact and text-forward so labels occupy more
-    of each wedge and the result looks more presentable.
-    """
+def pedigree_fan_chart_figure(selected_line: str, max_depth: int):
+    """Circular pedigree wheel/fan chart, closer to published ancestry-ring visuals."""
     fan_df = build_pedigree_fan_rows(selected_line, filtered_df, max_depth)
     if fan_df.empty:
         fig = go.Figure()
@@ -1306,23 +884,6 @@ def pedigree_fan_chart_figure(selected_line: str, max_depth: int, large_export: 
         return "#f0f0f0"
 
     colors = [sector_color(row) for _, row in fan_df.iterrows()]
-
-    def label_color(row):
-        # Text color indicates the sex/role of the parent at that sector.
-        # Female parent slots are red; male parent slots are blue; root/unknown are neutral.
-        role = str(row.get("role", ""))
-        if role == "Female parent":
-            return "#b30000"
-        if role == "Male parent":
-            return "#08519c"
-        if bool(row.get("missing", False)):
-            return "#666666"
-        return "#111111"
-
-    text_colors = [label_color(row) for _, row in fan_df.iterrows()]
-    labels = [wrap_fan_label(lbl, large_export=large_export) for lbl in fan_df["label"]]
-    text_size = 20 if large_export else 10
-
     customdata = np.stack(
         [
             fan_df["generation"].astype(str),
@@ -1333,7 +894,6 @@ def pedigree_fan_chart_figure(selected_line: str, max_depth: int, large_export: 
             fan_df["slot_contribution_pct"].round(3).astype(str),
             fan_df["total_contribution_pct"].round(3).astype(str),
             fan_df["total_slots_for_line"].astype(str),
-            fan_df["label"].astype(str),
         ],
         axis=-1,
     )
@@ -1341,19 +901,17 @@ def pedigree_fan_chart_figure(selected_line: str, max_depth: int, large_export: 
     fig = go.Figure(
         go.Sunburst(
             ids=fan_df["id"],
-            labels=labels,
+            labels=fan_df["label"],
             parents=fan_df["parent"],
             values=fan_df["value"],
             branchvalues="total",
             maxdepth=int(max_depth) + 1,
             insidetextorientation="radial",
             textinfo="label",
-            textfont={"color": text_colors, "size": text_size},
-            insidetextfont={"color": text_colors, "size": text_size},
-            marker={"colors": colors, "line": {"color": "white", "width": 0.8 if large_export else 1.2}},
+            marker={"colors": colors, "line": {"color": "white", "width": 1.2}},
             customdata=customdata,
             hovertemplate=(
-                "Line/slot: %{customdata[8]}<br>"
+                "Line/slot: %{label}<br>"
                 "Generation: %{customdata[0]}<br>"
                 "Role: %{customdata[1]}<br>"
                 "Major branch: %{customdata[2]}<br>"
@@ -1367,16 +925,14 @@ def pedigree_fan_chart_figure(selected_line: str, max_depth: int, large_export: 
         )
     )
 
-    export_size = max(1350, int(max_depth) * 185)
     fig.update_layout(
-        title=f"Pedigree fan chart for {selected_line}" + (" — full-label export" if large_export else ""),
-        height=export_size if large_export else 850,
-        width=export_size if large_export else None,
-        margin={"l": 18, "r": 18, "t": 90, "b": 50} if large_export else {"l": 10, "r": 10, "t": 75, "b": 35},
-        uniformtext={"minsize": 14 if large_export else 8, "mode": "show" if large_export else "hide"},
+        title=f"Pedigree fan chart for {selected_line}",
+        height=850,
+        margin={"l": 10, "r": 10, "t": 75, "b": 35},
+        uniformtext={"minsize": 8, "mode": "hide"},
         annotations=[
             {
-                "text": "Warm = female-side branch • Cool = male-side branch • Purple = repeated ancestor • Gray = unknown branch • Red text = female parent slot • Blue text = male parent slot",
+                "text": "Warm = female-side branch • Cool = male-side branch • Purple = repeated ancestor • Gray = unknown branch",
                 "xref": "paper",
                 "yref": "paper",
                 "x": 0.5,
@@ -1450,14 +1006,11 @@ def radial_node_ring_figure(selected_line: str, max_depth: int):
     return fig
 
 
-def generation_ring_figure(selected_line: str, max_depth: int, style: str = "fan", large_export: bool = False):
+def generation_ring_figure(selected_line: str, max_depth: int, style: str = "fan"):
     """Return either the new pedigree fan chart or the older node/link ring layout."""
     if style == "node-ring":
-        fig = radial_node_ring_figure(selected_line, max_depth)
-        if large_export:
-            fig.update_layout(height=max(1400, int(max_depth) * 180), width=max(1400, int(max_depth) * 180))
-        return fig
-    return pedigree_fan_chart_figure(selected_line, max_depth, large_export=large_export)
+        return radial_node_ring_figure(selected_line, max_depth)
+    return pedigree_fan_chart_figure(selected_line, max_depth)
 
 
 
@@ -1868,16 +1421,6 @@ def main_page_layout():
             dbc.Row(dbc.Col(html.Img(id="heatmap-image", src="", style={"width": "100%", "padding": "10px"}))),
             type="default",
         ),
-        html.Div(
-            html.A(
-                "Download high-resolution heatmap PNG",
-                id="download-heatmap-link",
-                href="",
-                download="kinship_heatmap.png",
-                className="btn btn-warning",
-                style={**CUSTOM_CSS["button"], "display": "none"},
-            )
-        ),
         html.Hr(),
         dbc.Card(
             dbc.CardBody(
@@ -1910,7 +1453,7 @@ def main_page_layout():
                             ),
                         ]
                     ),
-                    dcc.Loading(dcc.Graph(id="matrix-ordination-plot", config=HIGHRES_GRAPH_CONFIG), type="default"),
+                    dcc.Loading(dcc.Graph(id="matrix-ordination-plot"), type="default"),
                 ]
             ),
             className="mb-3",
@@ -1950,8 +1493,6 @@ def pedigree_explorer_layout():
                         {"label": "Generation ring layout", "value": "generation-ring"},
                         {"label": "Group / era / founder insights", "value": "group-era-insights"},
                         {"label": "Ancestor contribution chart", "value": "ancestor-contribution"},
-                        {"label": "Furthest direct male/female ancestors", "value": "direct-line-ancestors"},
-                        {"label": "Terminal ancestors by male/female branch", "value": "terminal-branch-ancestors"},
                     ],
                     multi=True,
                     placeholder="Select one or more functions",
@@ -2151,8 +1692,6 @@ def update_selected_line_names_list(selected_line_names):
     [
         Output("heatmap-image", "src"),
         Output("download-full-link", "href"),
-        Output("download-heatmap-link", "href"),
-        Output("download-heatmap-link", "style"),
         Output("matrix-store", "data"),
         Output("matrix-status", "children"),
     ],
@@ -2180,7 +1719,7 @@ def generate_amatrix_and_heatmap(n_clicks, selected_line_names, method_choice, e
         expansion_label = "selected lines + ancestors"
 
     if not all_related_lines:
-        return "", "", "", {**CUSTOM_CSS["button"], "display": "none"}, None, "No valid selected lines were found in the active pedigree."
+        return "", "", None, "No valid selected lines were found in the active pedigree."
 
     relatives_df = filtered_df[filtered_df["LineName"].isin(all_related_lines)].copy()
     current_matrix = compute_selected_matrix(relatives_df, method_choice)
@@ -2194,22 +1733,20 @@ def generate_amatrix_and_heatmap(n_clicks, selected_line_names, method_choice, e
     n_lines = len(current_matrix)
     if n_lines <= MAX_CLUSTER_SIZE:
         heatmap_plot = sns.clustermap(current_matrix, method="average", cmap="Spectral", figsize=(15, 15))
-        heatmap_plot.savefig(heatmap_file, dpi=450, bbox_inches="tight")
+        heatmap_plot.savefig(heatmap_file, dpi=250, bbox_inches="tight")
         plt.close(heatmap_plot.fig)
     else:
         plt.figure(figsize=(15, 15))
         sns.heatmap(current_matrix, cmap="Spectral")
         plt.title(f"Heatmap without clustering ({n_lines:,} lines > {MAX_CLUSTER_SIZE})")
-        plt.savefig(heatmap_file, dpi=450, bbox_inches="tight")
+        plt.savefig(heatmap_file, dpi=250, bbox_inches="tight")
         plt.close()
 
     heatmap_src = f"/download?filename={urllib.parse.quote(str(heatmap_file))}&type=image"
-    heatmap_download = f"/download?filename={urllib.parse.quote(str(heatmap_file))}&type=png_download"
-    heatmap_style = {**CUSTOM_CSS["button"], "display": "inline-block"}
     elapsed = time.time() - start_time
     status = f"Generated {n_lines:,} × {n_lines:,} matrix using {expansion_label} in {elapsed:.2f} seconds."
     store = {"path": str(matrix_file), "lines": current_matrix.index.tolist()}
-    return heatmap_src, full_matrix_link, heatmap_download, heatmap_style, store, status
+    return heatmap_src, full_matrix_link, store, status
 
 
 @app.callback(Output("subset-dropdown", "options"), Input("matrix-store", "data"))
@@ -2475,19 +2012,6 @@ def display_selected_progeny_modules(selected_functions):
                             value="none",
                             labelStyle={"display": "inline-block", "marginRight": "18px"},
                         ),
-                        html.Br(),
-                        html.Label("Tree orientation / flip:"),
-                        dcc.RadioItems(
-                            id="family-tree-orientation-radio",
-                            options=[
-                                {"label": "Ancestors above", "value": "TB"},
-                                {"label": "Ancestors below", "value": "BT"},
-                                {"label": "Ancestors left", "value": "LR"},
-                                {"label": "Ancestors right", "value": "RL"},
-                            ],
-                            value="TB",
-                            labelStyle={"display": "inline-block", "marginRight": "18px"},
-                        ),
                         html.Button("Generate Family Tree", id="generate-family-tree-button", style=CUSTOM_CSS["button"]),
                         html.Div(id="family-tree-image"),
                     ]
@@ -2603,15 +2127,7 @@ def display_selected_progeny_modules(selected_functions):
                             tooltip={"placement": "bottom", "always_visible": True},
                         ),
                         html.Button("Generate Ring Layout", id="generate-generation-ring-button", style=CUSTOM_CSS["button"]),
-                        html.A(
-                            "Download large full-label visualization HTML",
-                            id="download-generation-ring-link",
-                            href="",
-                            download="pedigree_fan_full_labels.html",
-                            className="btn btn-success",
-                            style={**CUSTOM_CSS["button"], "display": "none"},
-                        ),
-                        dcc.Loading(dcc.Graph(id="generation-ring-plot", config=HIGHRES_GRAPH_CONFIG), type="default"),
+                        dcc.Loading(dcc.Graph(id="generation-ring-plot"), type="default"),
                     ]
                 ),
                 className="mb-3",
@@ -2644,9 +2160,9 @@ def display_selected_progeny_modules(selected_functions):
                         html.Br(),
                         html.Button("Generate Group Insights", id="generate-group-insights-button", style=CUSTOM_CSS["button"]),
                         html.Div(id="group-insights-summary", style={"fontWeight": "bold", "marginTop": "10px"}),
-                        dcc.Loading(dcc.Graph(id="group-parent-usage-plot", config=HIGHRES_GRAPH_CONFIG), type="default"),
-                        dcc.Loading(dcc.Graph(id="group-era-plot", config=HIGHRES_GRAPH_CONFIG), type="default"),
-                        dcc.Loading(dcc.Graph(id="group-founder-cloud-plot", config=HIGHRES_GRAPH_CONFIG), type="default"),
+                        dcc.Loading(dcc.Graph(id="group-parent-usage-plot"), type="default"),
+                        dcc.Loading(dcc.Graph(id="group-era-plot"), type="default"),
+                        dcc.Loading(dcc.Graph(id="group-founder-cloud-plot"), type="default"),
                         html.H5("Matched lines"),
                         html.Div(id="group-matched-lines-table", style=CUSTOM_CSS["table_wrap"]),
                         html.H5("Top founder-like ancestors"),
@@ -2694,97 +2210,8 @@ def display_selected_progeny_modules(selected_functions):
                             ]
                         ),
                         html.Button("Generate Ancestor Contribution", id="generate-ancestor-contribution-button", style=CUSTOM_CSS["button"]),
-                        dcc.Loading(dcc.Graph(id="ancestor-contribution-plot", config=HIGHRES_GRAPH_CONFIG), type="default"),
+                        dcc.Loading(dcc.Graph(id="ancestor-contribution-plot"), type="default"),
                         html.Div(id="ancestor-contribution-table", style=CUSTOM_CSS["table_wrap"]),
-                    ]
-                ),
-                className="mb-3",
-            )
-        )
-
-    if "direct-line-ancestors" in selected_functions:
-        modules.append(
-            dbc.Card(
-                dbc.CardBody(
-                    [
-                        html.H4("Furthest direct male/female ancestors"),
-                        html.P(
-                            "Paste genotype names and the app will follow the direct male line "
-                            "(male parent of male parent, etc.) and direct female line "
-                            "(female parent of female parent, etc.) until each side terminates."
-                        ),
-                        dcc.Textarea(
-                            id="direct-line-genotype-input",
-                            placeholder="Examples:\nL01-299\nHoCP96-540\nLCP85-384",
-                            style={"width": "100%", "height": "130px"},
-                        ),
-                        html.Br(),
-                        html.Button("Find Furthest Direct Ancestors", id="generate-direct-line-ancestors-button", style=CUSTOM_CSS["button"]),
-                        html.Div(id="direct-line-ancestors-summary", style={"fontWeight": "bold", "marginTop": "10px"}),
-                        html.A(
-                            "Download Direct-Line Ancestor Table",
-                            id="download-direct-line-ancestors-link",
-                            href="",
-                            className="btn btn-success",
-                            style={**CUSTOM_CSS["button"], "display": "none"},
-                        ),
-                        html.Div(id="direct-line-ancestors-table", style=CUSTOM_CSS["table_wrap"]),
-                    ]
-                ),
-                className="mb-3",
-            )
-        )
-
-
-
-    if "terminal-branch-ancestors" in selected_functions:
-        modules.append(
-            dbc.Card(
-                dbc.CardBody(
-                    [
-                        html.H4("Terminal ancestors by male/female branch"),
-                        html.P(
-                            "Paste genotype names and the app will return every terminal/founder ancestor path found separately "
-                            "from the input genotype's MaleParent branch and FemaleParent branch. The output is long-format "
-                            "so it can be analyzed for cytoplasmic/chloroplast inheritance. Rows where AllFemaleParentPath is TRUE "
-                            "are the direct maternal-line candidates."
-                        ),
-                        dcc.Textarea(
-                            id="terminal-branch-genotype-input",
-                            placeholder="Examples:\nL01-299\nHoCP96-540\nLCP85-384",
-                            style={"width": "100%", "height": "140px"},
-                        ),
-                        html.Br(),
-                        dbc.Row(
-                            [
-                                dbc.Col(
-                                    [
-                                        html.Label("Max generations to search", style={"fontWeight": "bold"}),
-                                        dcc.Input(
-                                            id="terminal-branch-max-depth",
-                                            type="number",
-                                            min=1,
-                                            max=30,
-                                            step=1,
-                                            value=12,
-                                            style={"width": "100%"},
-                                        ),
-                                    ],
-                                    width=3,
-                                ),
-                            ]
-                        ),
-                        html.Br(),
-                        html.Button("Find Terminal Branch Ancestors", id="generate-terminal-branch-ancestors-button", style=CUSTOM_CSS["button"]),
-                        html.Div(id="terminal-branch-ancestors-summary", style={"fontWeight": "bold", "marginTop": "10px"}),
-                        html.A(
-                            "Download Terminal Branch Ancestor CSV",
-                            id="download-terminal-branch-ancestors-link",
-                            href="",
-                            className="btn btn-success",
-                            style={**CUSTOM_CSS["button"], "display": "none"},
-                        ),
-                        html.Div(id="terminal-branch-ancestors-table", style=CUSTOM_CSS["table_wrap"]),
                     ]
                 ),
                 className="mb-3",
@@ -2835,121 +2262,6 @@ def find_single_parent_progeny(n_clicks, parent):
 
 
 @app.callback(
-    [
-        Output("direct-line-ancestors-summary", "children"),
-        Output("direct-line-ancestors-table", "children"),
-        Output("download-direct-line-ancestors-link", "href"),
-        Output("download-direct-line-ancestors-link", "style"),
-    ],
-    Input("generate-direct-line-ancestors-button", "n_clicks"),
-    State("direct-line-genotype-input", "value"),
-    prevent_initial_call=True,
-)
-def generate_direct_line_ancestor_lookup(n_clicks, genotype_text):
-    if not n_clicks:
-        raise PreventUpdate
-
-    genotypes = parse_user_genotype_list(genotype_text or "")
-    hidden_style = {**CUSTOM_CSS["button"], "display": "none"}
-    visible_style = {**CUSTOM_CSS["button"], "display": "inline-block"}
-
-    if not genotypes:
-        return "Paste at least one genotype name.", "", "", hidden_style
-
-    result_df = direct_line_ancestor_table(genotypes, df)
-    found_n = int(result_df["FoundInPedigree"].sum()) if not result_df.empty else 0
-
-    file_name = f"direct_line_ancestors_{int(time.time())}.csv"
-    file_path = OUTPUT_DIR / file_name
-    result_df.to_csv(file_path, index=False)
-    href = f"/download?filename={urllib.parse.quote(str(file_path))}&type=csv"
-
-    summary = (
-        f"Processed {len(result_df):,} genotypes; {found_n:,} were found in the active pedigree. "
-        "Depth is the number of parent-to-parent steps from the input genotype to the furthest direct ancestor."
-    )
-    display_cols = [
-        "Genotype",
-        "FoundInPedigree",
-        "FurthestDirectMaleAncestor",
-        "DirectMaleDepth",
-        "FurthestDirectFemaleAncestor",
-        "DirectFemaleDepth",
-        "DirectMaleStatus",
-        "DirectFemaleStatus",
-        "DirectMalePath",
-        "DirectFemalePath",
-    ]
-    return summary, dataframe_to_dash_table(result_df[display_cols], max_rows=150), href, visible_style
-
-
-
-@app.callback(
-    [
-        Output("terminal-branch-ancestors-summary", "children"),
-        Output("terminal-branch-ancestors-table", "children"),
-        Output("download-terminal-branch-ancestors-link", "href"),
-        Output("download-terminal-branch-ancestors-link", "style"),
-    ],
-    Input("generate-terminal-branch-ancestors-button", "n_clicks"),
-    [State("terminal-branch-genotype-input", "value"), State("terminal-branch-max-depth", "value")],
-    prevent_initial_call=True,
-)
-def generate_terminal_branch_ancestor_lookup(n_clicks, genotype_text, max_depth):
-    if not n_clicks:
-        raise PreventUpdate
-
-    genotypes = parse_user_genotype_list(genotype_text or "")
-    hidden_style = {**CUSTOM_CSS["button"], "display": "none"}
-    visible_style = {**CUSTOM_CSS["button"], "display": "inline-block"}
-
-    if not genotypes:
-        return "Paste at least one genotype name.", "", "", hidden_style
-
-    # IMPORTANT:
-    # This intentionally uses the direct-line function, NOT terminal_branch_ancestor_table.
-    # It returns one row per genotype:
-    #   genotype -> FemaleParent -> FemaleParent -> ... oldest direct female ancestor
-    #   genotype -> MaleParent   -> MaleParent   -> ... oldest direct male ancestor
-    result_df = direct_line_ancestor_table(genotypes, df)
-
-    found_n = int(result_df["FoundInPedigree"].sum()) if not result_df.empty else 0
-
-    file_name = f"oldest_direct_male_female_ancestors_{int(time.time())}.csv"
-    file_path = OUTPUT_DIR / file_name
-    result_df.to_csv(file_path, index=False)
-
-    href = f"/download?filename={urllib.parse.quote(str(file_path))}&type=csv"
-
-    summary = (
-        f"Processed {len(result_df):,} input genotypes; "
-        f"{found_n:,} were found in the active pedigree. "
-        "This table returns only the oldest direct female-line ancestor and "
-        "oldest direct male-line ancestor for each genotype."
-    )
-
-    display_cols = [
-        "Genotype",
-        "FoundInPedigree",
-        "FurthestDirectFemaleAncestor",
-        "DirectFemaleDepth",
-        "FurthestDirectMaleAncestor",
-        "DirectMaleDepth",
-        "DirectFemaleStatus",
-        "DirectMaleStatus",
-        "DirectFemalePath",
-        "DirectMalePath",
-    ]
-
-    return (
-        summary,
-        dataframe_to_dash_table(result_df[display_cols], max_rows=200),
-        href,
-        visible_style,
-    )
-
-
-@app.callback(
     [Output("generation-depth-slider", "max"), Output("generation-depth-slider", "marks"), Output("generation-depth-slider", "value")],
     Input("family-tree-dropdown", "value"),
 )
@@ -2969,11 +2281,10 @@ def update_generation_depth_slider(selected_line_name):
         State("family-tree-dropdown", "value"),
         State("generation-depth-slider", "value"),
         State("kinship-method-slider", "value"),
-        State("family-tree-orientation-radio", "value"),
     ],
     prevent_initial_call=True,
 )
-def generate_family_tree(n_clicks, lineage_mode, selected_line_name, generation_depth, method_choice, orientation):
+def generate_family_tree(n_clicks, lineage_mode, selected_line_name, generation_depth, method_choice):
     if not n_clicks or not selected_line_name:
         raise PreventUpdate
 
@@ -3018,8 +2329,7 @@ def generate_family_tree(n_clicks, lineage_mode, selected_line_name, generation_
     male_line = get_direct_line(selected_line_name, filtered_df, "MaleParent")
 
     dot = graphviz.Digraph(comment="Family Tree")
-    rankdir = orientation if orientation in {"BT", "TB", "LR", "RL"} else "BT"
-    dot.attr("graph", rankdir=rankdir, splines="ortho", nodesep="0.35", ranksep="0.6")
+    dot.attr("graph", rankdir="BT", splines="ortho", nodesep="0.35", ranksep="0.6")
     dot.attr("node", shape="ellipse", style="filled", fontsize="20", fontname="Helvetica")
     dot.attr("edge", arrowsize="0.8")
 
@@ -3072,7 +2382,7 @@ def generate_family_tree(n_clicks, lineage_mode, selected_line_name, generation_
     dot.node("pedigree_summary", label=summary, shape="box", style="filled", fillcolor="white", fontsize="18")
     dot.edge("pedigree_summary", selected_line_name, style="invis")
 
-    return graphviz_visualization_block(dot, f"family_tree_{selected_line_name}_{rankdir}")
+    return graphviz_to_svg_img(dot)
 
 
 @app.callback(
@@ -3097,7 +2407,7 @@ def generate_descendant_tree(n_clicks, selected_line_name):
         if parent in nodes and child in nodes:
             edge_color = "blue" if role == "male" else "red" if role == "female" else "black"
             dot.edge(parent, child, color=edge_color)
-    return graphviz_visualization_block(dot, f"descendant_tree_{selected_line_name}")
+    return graphviz_to_svg_img(dot)
 
 
 @app.callback(
@@ -3140,7 +2450,7 @@ def generate_combined_family_tree(n_clicks, line1, line2):
         dot.edge(parent, child, color=color)
         added_edges.add((parent, child))
 
-    return graphviz_visualization_block(dot, f"combined_family_tree_{line1}_{line2}")
+    return graphviz_to_svg_img(dot)
 
 
 @app.callback(
@@ -3194,7 +2504,7 @@ def generate_temp_progeny_tree(n_clicks, female_parent, male_parent, method_choi
         if parent in all_lines and child in all_lines:
             edge_color = "blue" if role == "male" else "red" if role == "female" else "black"
             dot.edge(parent, child, color=edge_color)
-    return graphviz_visualization_block(dot, f"temporary_progeny_tree_{female_parent}_{male_parent}")
+    return graphviz_to_svg_img(dot)
 
 
 # =============================================================================
@@ -3326,11 +2636,7 @@ def generate_ancestor_contribution(n_clicks, selected_line, max_depth, founder_o
 
 
 @app.callback(
-    [
-        Output("generation-ring-plot", "figure"),
-        Output("download-generation-ring-link", "href"),
-        Output("download-generation-ring-link", "style"),
-    ],
+    Output("generation-ring-plot", "figure"),
     Input("generate-generation-ring-button", "n_clicks"),
     [
         State("generation-ring-dropdown", "value"),
@@ -3342,13 +2648,7 @@ def generate_ancestor_contribution(n_clicks, selected_line, max_depth, founder_o
 def generate_generation_ring(n_clicks, selected_line, max_depth, ring_style):
     if not n_clicks or not selected_line:
         raise PreventUpdate
-    depth = max_depth or 5
-    style = ring_style or "fan"
-    fig = generation_ring_figure(selected_line, depth, style)
-    export_fig = generation_ring_figure(selected_line, depth, style, large_export=True)
-    export_path = save_plotly_html(export_fig, f"generation_ring_{style}_{selected_line}_{depth}_full_labels")
-    link_style = {**CUSTOM_CSS["button"], "display": "inline-block"}
-    return fig, download_href(export_path, "html"), link_style
+    return generation_ring_figure(selected_line, max_depth or 5, ring_style or "fan")
 
 
 @app.callback(
@@ -3415,25 +2715,10 @@ def download_file():
     if not os.path.exists(filename):
         return "File not found", 404
 
-    suffix = Path(filename).suffix.lower()
     if file_type == "image":
         return send_file(filename, mimetype="image/png", as_attachment=False)
 
-    if file_type == "png_download" or suffix == ".png":
-        return send_file(filename, mimetype="image/png", as_attachment=True, download_name=os.path.basename(filename))
-    if file_type == "svg" or suffix == ".svg":
-        return send_file(filename, mimetype="image/svg+xml", as_attachment=True, download_name=os.path.basename(filename))
-    if file_type == "pdf" or suffix == ".pdf":
-        return send_file(filename, mimetype="application/pdf", as_attachment=True, download_name=os.path.basename(filename))
-    if file_type == "html" or suffix in {".html", ".htm"}:
-        return send_file(filename, mimetype="text/html", as_attachment=True, download_name=os.path.basename(filename))
-
-    if file_type == "subset":
-        download_name = "subset_matrix.csv"
-    elif file_type == "full":
-        download_name = "full_matrix.csv"
-    else:
-        download_name = os.path.basename(filename) or "download.csv"
+    download_name = "subset_matrix.csv" if file_type == "subset" else "full_matrix.csv"
     return send_file(filename, mimetype="text/csv", as_attachment=True, download_name=download_name)
 
 
